@@ -168,7 +168,7 @@ export class CanvasMcpClient {
     /**
      * Call an MCP tool by name with the given arguments.
      */
-    async callTool(name: string, args: Record<string, unknown>): Promise<unknown> {
+    async callTool<T = unknown>(name: string, args: Record<string, unknown>): Promise<T> {
         // Wait for initialization
         if (this.initPromise) {
             await this.initPromise;
@@ -183,7 +183,7 @@ export class CanvasMcpClient {
             arguments: args
         });
 
-        return result;
+        return result as T;
     }
 
     /**
