@@ -1,360 +1,1652 @@
-import * as vscode from 'vscode';
-import { CanvasMcpClient } from './mcpClient';
+import * as vscode from 'vscode'
+import * as path from 'path'
+import * as fs from 'fs'
+import { CanvasMcpClient } from './mcpClient'
+import { CourseTreeProvider, CourseTreeItem, CourseInfo } from './courseTreeProvider'
+import { OnboardingPanel } from './onboardingPanel'
+import { CoursePickerPanel, Course as PickerCourse } from './coursePickerPanel'
+import { MetadataPanel } from './metadataPanel'
 
 // Response type interfaces
 interface Course {
-    id: string;
-    name: string;
-    course_code: string;
+  id: string
+  name: string
+  course_code: string
 }
 
-interface ListCoursesResponse {
-    courses: Course[];
-}
+// list_courses returns an array directly, not wrapped in an object
+type ListCoursesResponse = Course[]
 
 interface PullModulesResponse {
-    modules_count: number;
-    items_count: number;
-    file: string;
+  modules_count: number
+  items_count: number
+  file: string
 }
 
 interface PushModulesResponse {
-    created: Array<{ name: string; id: string }>;
-    updated: Array<{ name: string; id: string }>;
-    deleted: Array<{ name: string; id: string }>;
-    errors: Array<{ name?: string; error: string }>;
+  created: Array<{ name: string; id: string }>
+  updated: Array<{ name: string; id: string }>
+  deleted: Array<{ name: string; id: string }>
+  errors: Array<{ name?: string; error: string }>
 }
 
 interface ModuleStatusResponse {
-    synced: Array<{ name: string }>;
-    canvas_only: Array<{ name: string }>;
-    local_only: Array<{ name: string }>;
-    summary: {
-        synced_count: number;
-        canvas_only_count: number;
-        local_only_count: number;
-    };
+  synced: Array<{ name: string }>
+  canvas_only: Array<{ name: string }>
+  local_only: Array<{ name: string }>
+  summary: {
+    synced_count: number
+    canvas_only_count: number
+    local_only_count: number
+  }
 }
 
-let mcpClient: CanvasMcpClient | undefined;
+interface PullQuizzesResponse {
+  pulled: Array<{ title: string; file: string }>
+  skipped: Array<{ title: string; reason: string }>
+  errors: Array<{ title?: string; error: string }>
+}
+
+interface PushQuizzesResponse {
+  created: Array<{ title: string; id: string }>
+  updated: Array<{ title: string; id: string }>
+  skipped: Array<{ title: string; reason: string }>
+  errors: Array<{ title?: string; error: string }>
+}
+
+interface PullRubricsResponse {
+  pulled: Array<{ assignment_name: string; file: string }>
+  skipped: Array<{ assignment_name: string; reason: string }>
+  no_rubric: Array<{ assignment_name: string }>
+  errors: Array<{ assignment_name?: string; error: string }>
+}
+
+interface PushRubricsResponse {
+  created: Array<{ assignment_name: string; rubric_id: string }>
+  updated: Array<{ assignment_name: string; rubric_id: string }>
+  skipped: Array<{ assignment_name: string; reason: string }>
+  errors: Array<{ assignment_name?: string; error: string }>
+}
+
+interface RubricStatusResponse {
+  synced: Array<{ assignment_name: string; status: string }>
+  canvas_only: Array<{ assignment_name: string }>
+  local_only: Array<{ assignment_name: string }>
+  summary: {
+    synced_count: number
+    canvas_only_count: number
+    local_only_count: number
+  }
+}
+
+let mcpClient: CanvasMcpClient | undefined
+let courseTreeProvider: CourseTreeProvider
+let extensionContext: vscode.ExtensionContext
+
+// Check if Canvas is configured
+async function hasCanvasToken(context: vscode.ExtensionContext): Promise<boolean> {
+  const token = await context.secrets.get('canvas-author.apiToken')
+  const envToken = process.env.CANVAS_API_TOKEN
+  return !!(token || envToken)
+}
+
+async function updateTokenContext(context: vscode.ExtensionContext) {
+  const hasToken = await hasCanvasToken(context)
+  await vscode.commands.executeCommand('setContext', 'canvas-author.hasToken', hasToken)
+}
+
+// Show onboarding panel if Canvas is not configured, returns true if connected
+async function requireCanvasConnection(context: vscode.ExtensionContext, actionDescription: string): Promise<boolean> {
+  const hasToken = await hasCanvasToken(context)
+  if (!hasToken) {
+    OnboardingPanel.createOrShow(context, `To ${actionDescription}, you need to connect to Canvas first.`)
+    return false
+  }
+  return true
+}
+
+// Show onboarding panel when API calls fail (token may be invalid/expired)
+async function handleConnectionFailure(context: vscode.ExtensionContext, actionDescription: string): Promise<void> {
+  const choice = await vscode.window.showErrorMessage(
+    'Could not connect to Canvas. Your token may be invalid or expired.',
+    'Reconfigure Connection',
+    'Cancel'
+  )
+  if (choice === 'Reconfigure Connection') {
+    OnboardingPanel.createOrShow(context, `To ${actionDescription}, you need a valid Canvas connection.`)
+  }
+}
 
 export async function activate(context: vscode.ExtensionContext) {
-    console.log('Canvas Author extension is now active');
+  console.log('Canvas Author extension is now active')
 
-    // Initialize MCP client
-    mcpClient = new CanvasMcpClient();
+  // Store context for use in command handlers
+  extensionContext = context
 
-    // Register commands
-    context.subscriptions.push(
-        vscode.commands.registerCommand('canvas-author.init', initCourse),
-        vscode.commands.registerCommand('canvas-author.pull', pullPages),
-        vscode.commands.registerCommand('canvas-author.push', pushPages),
-        vscode.commands.registerCommand('canvas-author.status', showStatus),
-        vscode.commands.registerCommand('canvas-author.listCourses', listCourses),
-        vscode.commands.registerCommand('canvas-author.pullModules', pullModules),
-        vscode.commands.registerCommand('canvas-author.pushModules', pushModules),
-        vscode.commands.registerCommand('canvas-author.moduleStatus', showModuleStatus)
-    );
+  // Check token status and set context
+  await updateTokenContext(context)
 
-    // Show status bar item when in a Canvas course directory
-    const statusBarItem = vscode.window.createStatusBarItem(
-        vscode.StatusBarAlignment.Left,
-        100
-    );
-    statusBarItem.text = '$(cloud) Canvas';
-    statusBarItem.tooltip = 'Canvas Author - Click to sync';
-    statusBarItem.command = 'canvas-author.status';
+  // Initialize MCP client with token from secret storage
+  const storedToken = await context.secrets.get('canvas-author.apiToken')
+  mcpClient = new CanvasMcpClient(storedToken)
 
-    // Show status bar if .canvas.json exists
-    if (vscode.workspace.workspaceFolders) {
-        const canvasConfig = await vscode.workspace.findFiles('.canvas.json', null, 1);
-        if (canvasConfig.length > 0) {
-            statusBarItem.show();
+  // Initialize course tree provider
+  courseTreeProvider = new CourseTreeProvider(context)
+  courseTreeProvider.setMcpClient(mcpClient)
+
+  // Register tree view
+  const treeView = vscode.window.createTreeView('canvasAuthorCourses', {
+    treeDataProvider: courseTreeProvider,
+    showCollapseAll: true
+  })
+  context.subscriptions.push(treeView)
+
+  // Register metadata panel
+  const metadataPanel = new MetadataPanel(context)
+  context.subscriptions.push(
+    vscode.window.registerWebviewViewProvider('canvasAuthorMetadata', metadataPanel)
+  )
+
+  // Register commands
+  context.subscriptions.push(
+    // Original commands
+    vscode.commands.registerCommand('canvas-author.init', initCourse),
+    vscode.commands.registerCommand('canvas-author.pull', (item?: CourseTreeItem) => pullPages(item)),
+    vscode.commands.registerCommand('canvas-author.push', (item?: CourseTreeItem) => pushPages(item)),
+    vscode.commands.registerCommand('canvas-author.status', (item?: CourseTreeItem) => showStatus(item)),
+    vscode.commands.registerCommand('canvas-author.listCourses', listCourses),
+    vscode.commands.registerCommand('canvas-author.pullModules', (item?: CourseTreeItem) => pullModules(item)),
+    vscode.commands.registerCommand('canvas-author.pushModules', (item?: CourseTreeItem) => pushModules(item)),
+    vscode.commands.registerCommand('canvas-author.moduleStatus', (item?: CourseTreeItem) => showModuleStatus(item)),
+    vscode.commands.registerCommand('canvas-author.pullQuizzes', (item?: CourseTreeItem) => pullQuizzes(item)),
+    vscode.commands.registerCommand('canvas-author.pushQuizzes', (item?: CourseTreeItem) => pushQuizzes(item)),
+    vscode.commands.registerCommand('canvas-author.pullRubrics', (item?: CourseTreeItem) => pullRubrics(item)),
+    vscode.commands.registerCommand('canvas-author.pushRubrics', (item?: CourseTreeItem) => pushRubrics(item)),
+    vscode.commands.registerCommand('canvas-author.rubricStatus', (item?: CourseTreeItem) => showRubricStatus(item)),
+
+    // Sidebar commands
+    vscode.commands.registerCommand('canvas-author.addCourse', addCourse),
+    vscode.commands.registerCommand('canvas-author.refreshCourses', refreshCoursesAndClient),
+    vscode.commands.registerCommand('canvas-author.removeCourse', removeCourse),
+    vscode.commands.registerCommand('canvas-author.openInExplorer', openInExplorer),
+    vscode.commands.registerCommand('canvas-author.cloneFromRemote', cloneFromRemote),
+    vscode.commands.registerCommand('canvas-author.configureMcp', configureMcpCommand),
+
+    // New offline-first commands
+    vscode.commands.registerCommand('canvas-author.configureCanvas', () => configureCanvas(context)),
+    vscode.commands.registerCommand('canvas-author.createLocalCourse', createLocalCourse),
+    vscode.commands.registerCommand('canvas-author.createPage', (item?: CourseTreeItem) => createPage(item)),
+    vscode.commands.registerCommand('canvas-author.createQuiz', (item?: CourseTreeItem) => createQuiz(item)),
+    vscode.commands.registerCommand('canvas-author.linkToCanvas', (item?: CourseTreeItem) => linkToCanvas(item, context)),
+
+    // Onboarding command
+    vscode.commands.registerCommand('canvas-author.showOnboarding', () => OnboardingPanel.createOrShow(context))
+  )
+
+  // Show status bar item when in a Canvas course directory
+  const statusBarItem = vscode.window.createStatusBarItem(
+    vscode.StatusBarAlignment.Left,
+    100
+  )
+  statusBarItem.text = '$(cloud) Canvas'
+  statusBarItem.tooltip = 'Canvas Author - Click to sync'
+  statusBarItem.command = 'canvas-author.status'
+
+  // Show status bar if .canvas.json exists
+  if (vscode.workspace.workspaceFolders) {
+    const canvasConfig = await vscode.workspace.findFiles('.canvas.json', null, 1)
+    if (canvasConfig.length > 0) {
+      statusBarItem.show()
+    }
+  }
+
+  context.subscriptions.push(statusBarItem)
+
+  // Auto-detect and register courses from workspace
+  await autoDetectCourses()
+}
+
+async function refreshCoursesAndClient() {
+  // Recreate MCP client with current token from secret storage
+  const storedToken = await extensionContext.secrets.get('canvas-author.apiToken')
+  mcpClient?.dispose()
+  mcpClient = new CanvasMcpClient(storedToken)
+  courseTreeProvider.setMcpClient(mcpClient)
+
+  // Refresh the tree view
+  courseTreeProvider.refresh()
+}
+
+async function autoDetectCourses() {
+  if (!vscode.workspace.workspaceFolders) {
+    return
+  }
+
+  for (const folder of vscode.workspace.workspaceFolders) {
+    const canvasConfigPath = path.join(folder.uri.fsPath, '.canvas.json')
+    if (fs.existsSync(canvasConfigPath)) {
+      try {
+        const config = JSON.parse(fs.readFileSync(canvasConfigPath, 'utf8'))
+        const courseInfo: CourseInfo = {
+          id: config.course_id?.toString() || '',
+          name: config.course_name || folder.name,
+          courseCode: config.course_code || '',
+          localPath: folder.uri.fsPath
         }
+
+        if (courseInfo.id && !courseTreeProvider.getCourseById(courseInfo.id)) {
+          courseTreeProvider.addCourse(courseInfo)
+        }
+      } catch (e) {
+        console.error('Failed to parse .canvas.json:', e)
+      }
+    }
+  }
+}
+
+function getCoursePath(item?: CourseTreeItem): string | undefined {
+  if (item?.courseInfo) {
+    return item.courseInfo.localPath
+  }
+
+  const folders = vscode.workspace.workspaceFolders
+  if (folders && folders.length > 0) {
+    return folders[0].uri.fsPath
+  }
+
+  return undefined
+}
+
+function getCourseId(item?: CourseTreeItem): string | undefined {
+  if (item?.courseInfo) {
+    return item.courseInfo.id
+  }
+
+  // Try to read from .canvas.json in workspace
+  const folders = vscode.workspace.workspaceFolders
+  if (folders && folders.length > 0) {
+    const configPath = path.join(folders[0].uri.fsPath, '.canvas.json')
+    if (fs.existsSync(configPath)) {
+      try {
+        const config = JSON.parse(fs.readFileSync(configPath, 'utf8'))
+        return config.course_id?.toString()
+      } catch (e) {
+        console.error('Failed to read course_id from .canvas.json:', e)
+      }
+    }
+  }
+
+  return undefined
+}
+
+async function addCourse() {
+  const choice = await vscode.window.showQuickPick([
+    { label: '$(cloud-download) From Canvas', description: 'Initialize a new course from Canvas', value: 'canvas' },
+    { label: '$(folder) Existing Folder', description: 'Register an existing course folder', value: 'folder' },
+    { label: '$(repo-clone) Clone from Git', description: 'Clone a course repo from GitHub/GitLab', value: 'clone' }
+  ], {
+    placeHolder: 'How would you like to add a course?'
+  })
+
+  if (!choice) {
+    return
+  }
+
+  switch (choice.value) {
+    case 'canvas':
+      await initCourse()
+      break
+    case 'folder':
+      await registerExistingFolder()
+      break
+    case 'clone':
+      await cloneFromRemote()
+      break
+  }
+}
+
+async function registerExistingFolder() {
+  const uri = await vscode.window.showOpenDialog({
+    canSelectFiles: false,
+    canSelectFolders: true,
+    canSelectMany: false,
+    openLabel: 'Select Course Folder'
+  })
+
+  if (!uri || uri.length === 0) {
+    return
+  }
+
+  const folderPath = uri[0].fsPath
+  const canvasConfigPath = path.join(folderPath, '.canvas.json')
+
+  if (!fs.existsSync(canvasConfigPath)) {
+    const init = await vscode.window.showWarningMessage(
+      'This folder does not have a .canvas.json file. Initialize it as a Canvas course?',
+      'Initialize', 'Cancel'
+    )
+    if (init === 'Initialize') {
+      // Open the folder and initialize
+      await vscode.commands.executeCommand('vscode.openFolder', uri[0])
+      await initCourse()
+    }
+    return
+  }
+
+  try {
+    const config = JSON.parse(fs.readFileSync(canvasConfigPath, 'utf8'))
+    const courseInfo: CourseInfo = {
+      id: config.course_id?.toString() || '',
+      name: config.course_name || path.basename(folderPath),
+      courseCode: config.course_code || '',
+      localPath: folderPath
     }
 
-    context.subscriptions.push(statusBarItem);
+    courseTreeProvider.addCourse(courseInfo)
+    vscode.window.showInformationMessage(`Added course: ${courseInfo.name}`)
+  } catch (e) {
+    vscode.window.showErrorMessage(`Failed to read course config: ${e}`)
+  }
+}
+
+async function cloneFromRemote() {
+  const repoUrl = await vscode.window.showInputBox({
+    prompt: 'Enter the Git repository URL',
+    placeHolder: 'https://github.com/user/course-repo.git',
+    validateInput: (value) => {
+      if (!value) {
+        return 'Repository URL is required'
+      }
+      if (!value.match(/^https?:\/\/.+\.git$|^git@.+:.+\.git$/)) {
+        return 'Please enter a valid Git URL'
+      }
+      return undefined
+    }
+  })
+
+  if (!repoUrl) {
+    return
+  }
+
+  // Determine clone location
+  const storageChoice = await vscode.window.showQuickPick([
+    { label: 'Default Location', description: `~/.canvas-author/courses/`, value: 'default' },
+    { label: 'Choose Location', description: 'Select a custom folder', value: 'custom' }
+  ], {
+    placeHolder: 'Where should the course be cloned?'
+  })
+
+  if (!storageChoice) {
+    return
+  }
+
+  let targetDir: string
+  const repoName = path.basename(repoUrl, '.git')
+
+  if (storageChoice.value === 'default') {
+    const defaultPath = path.join(courseTreeProvider.getStoragePath(), 'courses')
+    if (!fs.existsSync(defaultPath)) {
+      fs.mkdirSync(defaultPath, { recursive: true })
+    }
+    targetDir = path.join(defaultPath, repoName)
+  } else {
+    const uri = await vscode.window.showOpenDialog({
+      canSelectFiles: false,
+      canSelectFolders: true,
+      canSelectMany: false,
+      openLabel: 'Select Parent Folder'
+    })
+
+    if (!uri || uri.length === 0) {
+      return
+    }
+
+    targetDir = path.join(uri[0].fsPath, repoName)
+  }
+
+  // Clone the repo
+  try {
+    await vscode.window.withProgress({
+      location: vscode.ProgressLocation.Notification,
+      title: `Cloning ${repoName}...`,
+      cancellable: false
+    }, async () => {
+      const terminal = vscode.window.createTerminal('Canvas Author')
+      terminal.sendText(`git clone "${repoUrl}" "${targetDir}"`)
+      terminal.show()
+
+      // Wait for clone to complete (simple polling)
+      await new Promise(resolve => setTimeout(resolve, 5000))
+    })
+
+    // Check if .canvas.json exists after clone
+    const canvasConfigPath = path.join(targetDir, '.canvas.json')
+    if (fs.existsSync(canvasConfigPath)) {
+      const config = JSON.parse(fs.readFileSync(canvasConfigPath, 'utf8'))
+      const courseInfo: CourseInfo = {
+        id: config.course_id?.toString() || '',
+        name: config.course_name || repoName,
+        courseCode: config.course_code || '',
+        localPath: targetDir,
+        remoteUrl: repoUrl
+      }
+
+      courseTreeProvider.addCourse(courseInfo)
+      vscode.window.showInformationMessage(`Cloned and registered: ${courseInfo.name}`)
+    } else {
+      vscode.window.showWarningMessage(
+        'Repository cloned but no .canvas.json found. You may need to initialize it.'
+      )
+    }
+  } catch (error) {
+    vscode.window.showErrorMessage(`Failed to clone: ${error}`)
+  }
+}
+
+async function removeCourse(item: CourseTreeItem) {
+  if (!item.courseInfo) {
+    return
+  }
+
+  const confirm = await vscode.window.showWarningMessage(
+    `Remove "${item.courseInfo.name}" from the course list? (Files will not be deleted)`,
+    'Remove', 'Cancel'
+  )
+
+  if (confirm === 'Remove') {
+    courseTreeProvider.removeCourse(item.courseInfo.id)
+    vscode.window.showInformationMessage(`Removed: ${item.courseInfo.name}`)
+  }
+}
+
+async function openInExplorer(item: CourseTreeItem) {
+  if (item.courseInfo) {
+    await vscode.commands.executeCommand('revealFileInOS', vscode.Uri.file(item.courseInfo.localPath))
+  }
+}
+
+async function configureMcpForCopilot(targetDir: string) {
+  const vscodeDir = path.join(targetDir, '.vscode')
+  const mcpConfigPath = path.join(vscodeDir, 'mcp.json')
+
+  // Create .vscode directory if it doesn't exist
+  if (!fs.existsSync(vscodeDir)) {
+    fs.mkdirSync(vscodeDir, { recursive: true })
+  }
+
+  // Create or update mcp.json for Copilot
+  const mcpConfig = {
+    servers: {
+      "canvas-author": {
+        command: "canvas-author",
+        args: ["server"],
+        env: {
+          CANVAS_DOMAIN: "${env:CANVAS_DOMAIN}",
+          CANVAS_API_TOKEN: "${env:CANVAS_API_TOKEN}"
+        }
+      }
+    }
+  }
+
+  fs.writeFileSync(mcpConfigPath, JSON.stringify(mcpConfig, null, 2))
+
+  // Also add to .gitignore if it exists
+  const gitignorePath = path.join(targetDir, '.gitignore')
+  if (fs.existsSync(gitignorePath)) {
+    const gitignore = fs.readFileSync(gitignorePath, 'utf8')
+    if (!gitignore.includes('.vscode/mcp.json')) {
+      fs.appendFileSync(gitignorePath, '\n# MCP config (contains env var references)\n.vscode/mcp.json\n')
+    }
+  }
+}
+
+async function configureMcpCommand(item?: CourseTreeItem) {
+  const coursePath = getCoursePath(item)
+  if (!coursePath) {
+    vscode.window.showErrorMessage('Please select a course or open a folder')
+    return
+  }
+
+  await configureMcpForCopilot(coursePath)
+  vscode.window.showInformationMessage('MCP configured for Copilot at .vscode/mcp.json')
+}
+
+async function configureCanvas(context: vscode.ExtensionContext) {
+  // Get Canvas domain
+  const domain = await vscode.window.showInputBox({
+    prompt: 'Enter your Canvas LMS domain',
+    placeHolder: 'canvas.instructure.com or myschool.instructure.com',
+    value: vscode.workspace.getConfiguration('canvas-author').get('canvasDomain') || ''
+  })
+
+  if (!domain) {
+    return
+  }
+
+  // Get API token
+  const token = await vscode.window.showInputBox({
+    prompt: 'Enter your Canvas API token',
+    placeHolder: 'Generate at Canvas > Profile > Settings > New Access Token',
+    password: true
+  })
+
+  if (!token) {
+    return
+  }
+
+  // Save domain to settings
+  await vscode.workspace.getConfiguration('canvas-author').update('canvasDomain', domain, true)
+
+  // Save token to secret storage
+  await context.secrets.store('canvas-author.apiToken', token)
+
+  // Update context for welcome view
+  await updateTokenContext(context)
+
+  // Recreate MCP client with the new token
+  mcpClient?.dispose()
+  mcpClient = new CanvasMcpClient(token)
+  courseTreeProvider.setMcpClient(mcpClient)
+
+  // Refresh tree
+  courseTreeProvider.refresh()
+
+  vscode.window.showInformationMessage('Canvas connection configured! You can now import courses from Canvas.')
+}
+
+async function createLocalCourse() {
+  // Get course name
+  const courseName = await vscode.window.showInputBox({
+    prompt: 'Enter a name for your course',
+    placeHolder: 'Introduction to Computer Science'
+  })
+
+  if (!courseName) {
+    return
+  }
+
+  // Get course code (optional)
+  const courseCode = await vscode.window.showInputBox({
+    prompt: 'Enter a course code (optional)',
+    placeHolder: 'CS101'
+  })
+
+  // Ask where to store
+  const storageChoice = await vscode.window.showQuickPick([
+    { label: 'Default Location', description: '~/.canvas-author/courses/', value: 'default' },
+    { label: 'Current Workspace', description: 'Create in current folder', value: 'workspace' },
+    { label: 'Choose Location', description: 'Select a folder', value: 'custom' }
+  ], {
+    placeHolder: 'Where should the course be created?'
+  })
+
+  if (!storageChoice) {
+    return
+  }
+
+  let targetDir: string
+  const safeName = courseName.replace(/[^a-zA-Z0-9-_\s]/g, '').replace(/\s+/g, '-').toLowerCase()
+
+  if (storageChoice.value === 'default') {
+    const defaultPath = path.join(courseTreeProvider.getStoragePath(), 'courses')
+    if (!fs.existsSync(defaultPath)) {
+      fs.mkdirSync(defaultPath, { recursive: true })
+    }
+    targetDir = path.join(defaultPath, safeName)
+  } else if (storageChoice.value === 'workspace') {
+    const folders = vscode.workspace.workspaceFolders
+    if (!folders) {
+      vscode.window.showErrorMessage('Please open a folder first')
+      return
+    }
+    targetDir = path.join(folders[0].uri.fsPath, safeName)
+  } else {
+    const uri = await vscode.window.showOpenDialog({
+      canSelectFiles: false,
+      canSelectFolders: true,
+      canSelectMany: false,
+      openLabel: 'Select Parent Folder'
+    })
+
+    if (!uri || uri.length === 0) {
+      return
+    }
+    targetDir = path.join(uri[0].fsPath, safeName)
+  }
+
+  // Create course structure
+  try {
+    // Create directories
+    fs.mkdirSync(targetDir, { recursive: true })
+    fs.mkdirSync(path.join(targetDir, 'quizzes'), { recursive: true })
+
+    // Create .canvas.json (local only, no course_id yet)
+    const canvasConfig = {
+      course_name: courseName,
+      course_code: courseCode || '',
+      local_only: true,
+      created_at: new Date().toISOString()
+    }
+    fs.writeFileSync(
+      path.join(targetDir, '.canvas.json'),
+      JSON.stringify(canvasConfig, null, 2)
+    )
+
+    // Create modules.yaml template
+    const modulesYaml = `modules:
+- name: Week 1 - Introduction
+  published: false
+  items:
+  - type: page
+    page_url: welcome
+  - type: page
+    page_url: syllabus
+`
+    fs.writeFileSync(path.join(targetDir, 'modules.yaml'), modulesYaml)
+
+    // Create welcome page
+    const welcomePage = `---
+title: Welcome
+url: welcome
+published: false
+---
+
+# Welcome to ${courseName}
+
+Welcome to the course! This page will introduce you to the course content.
+
+## Getting Started
+
+Add your course introduction here.
+`
+    fs.writeFileSync(path.join(targetDir, 'welcome.md'), welcomePage)
+
+    // Create syllabus page
+    const syllabusPage = `---
+title: Syllabus
+url: syllabus
+published: false
+---
+
+# ${courseName} Syllabus
+
+## Course Description
+
+Add your course description here.
+
+## Learning Objectives
+
+1. Objective one
+2. Objective two
+3. Objective three
+
+## Grading
+
+| Component | Weight |
+|-----------|--------|
+| Assignments | 40% |
+| Quizzes | 20% |
+| Final Exam | 40% |
+
+## Schedule
+
+| Week | Topic | Assignments |
+|------|-------|-------------|
+| 1 | Introduction | Reading 1 |
+| 2 | Fundamentals | Assignment 1 |
+`
+    fs.writeFileSync(path.join(targetDir, 'syllabus.md'), syllabusPage)
+
+    // Create .gitignore
+    const gitignore = `.env
+.vscode/mcp.json
+`
+    fs.writeFileSync(path.join(targetDir, '.gitignore'), gitignore)
+
+    // Initialize git repo
+    const terminal = vscode.window.createTerminal('Canvas Author')
+    terminal.sendText(`cd "${targetDir}" && git init`)
+
+    // Register the course (generate a local ID)
+    const localId = `local-${Date.now()}`
+    const courseInfo: CourseInfo = {
+      id: localId,
+      name: courseName,
+      courseCode: courseCode || '',
+      localPath: targetDir
+    }
+    courseTreeProvider.addCourse(courseInfo)
+
+    // Configure MCP for Copilot
+    await configureMcpForCopilot(targetDir)
+
+    vscode.window.showInformationMessage(
+      `Created local course: ${courseName}. Use "Link to Canvas" when ready to sync.`
+    )
+
+    // Open the course folder
+    const openChoice = await vscode.window.showInformationMessage(
+      'Open course folder in VS Code?',
+      'Open', 'Open in New Window', 'No'
+    )
+
+    if (openChoice === 'Open') {
+      await vscode.commands.executeCommand('vscode.openFolder', vscode.Uri.file(targetDir), false)
+    } else if (openChoice === 'Open in New Window') {
+      await vscode.commands.executeCommand('vscode.openFolder', vscode.Uri.file(targetDir), true)
+    }
+
+  } catch (error) {
+    vscode.window.showErrorMessage(`Failed to create course: ${error}`)
+  }
+}
+
+async function createPage(item?: CourseTreeItem) {
+  const coursePath = getCoursePath(item)
+  if (!coursePath) {
+    vscode.window.showErrorMessage('Please select a course first')
+    return
+  }
+
+  const title = await vscode.window.showInputBox({
+    prompt: 'Enter page title',
+    placeHolder: 'Week 1 Notes'
+  })
+
+  if (!title) {
+    return
+  }
+
+  const url = title.toLowerCase().replace(/[^a-z0-9\s-]/g, '').replace(/\s+/g, '-')
+  const fileName = `${url}.md`
+  const filePath = path.join(coursePath, fileName)
+
+  if (fs.existsSync(filePath)) {
+    vscode.window.showErrorMessage(`Page already exists: ${fileName}`)
+    return
+  }
+
+  const content = `---
+title: ${title}
+url: ${url}
+published: false
+---
+
+# ${title}
+
+Add your content here.
+`
+
+  fs.writeFileSync(filePath, content)
+  courseTreeProvider.refresh()
+
+  // Open the file
+  const doc = await vscode.workspace.openTextDocument(filePath)
+  await vscode.window.showTextDocument(doc)
+
+  vscode.window.showInformationMessage(`Created page: ${title}`)
+}
+
+async function createQuiz(item?: CourseTreeItem) {
+  const coursePath = getCoursePath(item)
+  if (!coursePath) {
+    vscode.window.showErrorMessage('Please select a course first')
+    return
+  }
+
+  const title = await vscode.window.showInputBox({
+    prompt: 'Enter quiz title',
+    placeHolder: 'Week 1 Quiz'
+  })
+
+  if (!title) {
+    return
+  }
+
+  const url = title.toLowerCase().replace(/[^a-z0-9\s-]/g, '').replace(/\s+/g, '-')
+  const fileName = `${url}.md`
+  const quizzesDir = path.join(coursePath, 'quizzes')
+
+  if (!fs.existsSync(quizzesDir)) {
+    fs.mkdirSync(quizzesDir, { recursive: true })
+  }
+
+  const filePath = path.join(quizzesDir, fileName)
+
+  if (fs.existsSync(filePath)) {
+    vscode.window.showErrorMessage(`Quiz already exists: ${fileName}`)
+    return
+  }
+
+  const content = `---
+title: ${title}
+time_limit: 30
+published: false
+shuffle_answers: true
+---
+
+# ${title}
+
+## Questions
+
+### 1. [MC] Sample multiple choice question? (1 pt)
+
+a. Wrong answer
+*b. Correct answer
+c. Another wrong answer
+d. Also wrong
+
+---
+
+### 2. [TF] Sample true/false statement. (1 pt)
+
+*a. True
+b. False
+
+---
+
+### 3. [SA] Sample short answer question? (1 pt)
+
+*correct answer
+*also acceptable
+`
+
+  fs.writeFileSync(filePath, content)
+  courseTreeProvider.refresh()
+
+  // Open the file
+  const doc = await vscode.workspace.openTextDocument(filePath)
+  await vscode.window.showTextDocument(doc)
+
+  vscode.window.showInformationMessage(`Created quiz: ${title}`)
+}
+
+async function linkToCanvas(item: CourseTreeItem | undefined, context: vscode.ExtensionContext) {
+  const coursePath = getCoursePath(item)
+  if (!coursePath) {
+    vscode.window.showErrorMessage('Please select a course first')
+    return
+  }
+
+  // Check Canvas connection
+  if (!await requireCanvasConnection(context, 'link this course to Canvas')) {
+    return
+  }
+
+  // Get list of Canvas courses
+  const courses = await listCoursesQuiet()
+  if (!courses) {
+    await handleConnectionFailure(context, 'link this course to Canvas')
+    return
+  }
+  if (courses.length === 0) {
+    vscode.window.showInformationMessage('No courses found in your Canvas account.')
+    return
+  }
+
+  const choice = await vscode.window.showQuickPick([
+    { label: '$(cloud-upload) Link to existing Canvas course', value: 'existing' },
+    { label: '$(add) Create new Canvas course', value: 'new' }
+  ], {
+    placeHolder: 'How would you like to link this course?'
+  })
+
+  if (!choice) {
+    return
+  }
+
+  if (choice.value === 'existing') {
+    // Pick existing course
+    const items = courses.map(c => ({
+      label: c.name,
+      description: c.course_code,
+      detail: `ID: ${c.id}`,
+      courseId: c.id
+    }))
+
+    const selected = await vscode.window.showQuickPick(items, {
+      placeHolder: 'Select Canvas course to link'
+    })
+
+    if (!selected) {
+      return
+    }
+
+    // Update .canvas.json with course_id
+    const configPath = path.join(coursePath, '.canvas.json')
+    let config: any = {}
+
+    if (fs.existsSync(configPath)) {
+      config = JSON.parse(fs.readFileSync(configPath, 'utf8'))
+    }
+
+    config.course_id = selected.courseId
+    config.local_only = false
+    config.linked_at = new Date().toISOString()
+
+    fs.writeFileSync(configPath, JSON.stringify(config, null, 2))
+
+    // Update course registry
+    if (item?.courseInfo) {
+      const updatedInfo: CourseInfo = {
+        ...item.courseInfo,
+        id: selected.courseId
+      }
+      courseTreeProvider.removeCourse(item.courseInfo.id)
+      courseTreeProvider.addCourse(updatedInfo)
+    }
+
+    vscode.window.showInformationMessage(
+      `Linked to Canvas course: ${selected.label}. Use Push to upload content.`
+    )
+
+  } else {
+    // Create new course (would need Canvas API support)
+    vscode.window.showInformationMessage(
+      'Creating new Canvas courses is not yet supported. Please create the course in Canvas first, then link to it.'
+    )
+  }
 }
 
 async function initCourse() {
-    // Get list of courses first
-    const courses = await listCoursesQuiet();
-    if (!courses || courses.length === 0) {
-        vscode.window.showErrorMessage('No courses found. Check your Canvas credentials.');
-        return;
-    }
+  // Check Canvas connection
+  if (!await requireCanvasConnection(extensionContext, 'import a course from Canvas')) {
+    return
+  }
 
-    // Let user pick a course
-    const items = courses.map(c => ({
-        label: c.name,
-        description: c.course_code,
-        detail: `ID: ${c.id}`,
-        courseId: c.id
-    }));
+  // Get list of courses first
+  const courses = await listCoursesQuiet()
+  if (!courses) {
+    await handleConnectionFailure(extensionContext, 'import a course from Canvas')
+    return
+  }
+  if (courses.length === 0) {
+    vscode.window.showInformationMessage('No courses found in your Canvas account.')
+    return
+  }
 
-    const selected = await vscode.window.showQuickPick(items, {
-        placeHolder: 'Select a course to initialize'
-    });
-
-    if (!selected) {
-        return;
-    }
-
-    // Get target directory
-    const folders = vscode.workspace.workspaceFolders;
-    if (!folders) {
-        vscode.window.showErrorMessage('Please open a folder first');
-        return;
-    }
-
-    try {
-        await mcpClient?.callTool('init_course', {
-            course_id: selected.courseId,
-            directory: folders[0].uri.fsPath
-        });
-        vscode.window.showInformationMessage(`Initialized course: ${selected.label}`);
-    } catch (error) {
-        vscode.window.showErrorMessage(`Failed to initialize: ${error}`);
-    }
+  // Show course picker panel
+  CoursePickerPanel.createOrShow(extensionContext, courses, async (selectedCourse) => {
+    await initCourseWithSelection(selectedCourse)
+  })
 }
 
-async function pullPages() {
-    const folders = vscode.workspace.workspaceFolders;
-    if (!folders) {
-        vscode.window.showErrorMessage('Please open a folder first');
-        return;
-    }
+async function initCourseWithSelection(selected: { id: string; name: string; course_code: string }) {
+  // Ask where to store the course
+  const storageChoice = await vscode.window.showQuickPick([
+    { label: 'Current Workspace', description: 'Initialize in current workspace folder', value: 'workspace' },
+    { label: 'Default Location', description: `~/.canvas-author/courses/`, value: 'default' },
+    { label: 'Choose Location', description: 'Select a custom folder', value: 'custom' }
+  ], {
+    placeHolder: 'Where should the course be stored?'
+  })
 
-    try {
-        await vscode.window.withProgress({
-            location: vscode.ProgressLocation.Notification,
-            title: 'Pulling pages from Canvas...',
-            cancellable: false
-        }, async () => {
-            const result = await mcpClient?.callTool('pull_pages', {
-                directory: folders[0].uri.fsPath
-            });
-            return result;
-        });
-        vscode.window.showInformationMessage('Pages pulled successfully');
-    } catch (error) {
-        vscode.window.showErrorMessage(`Failed to pull pages: ${error}`);
+  if (!storageChoice) {
+    return
+  }
+
+  let targetDir: string
+
+  if (storageChoice.value === 'workspace') {
+    const folders = vscode.workspace.workspaceFolders
+    if (!folders) {
+      vscode.window.showErrorMessage('Please open a folder first')
+      return
     }
+    targetDir = folders[0].uri.fsPath
+  } else if (storageChoice.value === 'default') {
+    const defaultPath = path.join(courseTreeProvider.getStoragePath(), 'courses')
+    if (!fs.existsSync(defaultPath)) {
+      fs.mkdirSync(defaultPath, { recursive: true })
+    }
+    const safeName = selected.name.replace(/[^a-zA-Z0-9-_]/g, '-').toLowerCase()
+    targetDir = path.join(defaultPath, `${safeName}-${selected.id}`)
+    if (!fs.existsSync(targetDir)) {
+      fs.mkdirSync(targetDir, { recursive: true })
+    }
+  } else {
+    const uri = await vscode.window.showOpenDialog({
+      canSelectFiles: false,
+      canSelectFolders: true,
+      canSelectMany: false,
+      openLabel: 'Select Folder'
+    })
+
+    if (!uri || uri.length === 0) {
+      return
+    }
+    targetDir = uri[0].fsPath
+  }
+
+  try {
+    await vscode.window.withProgress({
+      location: vscode.ProgressLocation.Notification,
+      title: `Initializing course: ${selected.name}`,
+      cancellable: false
+    }, async (progress) => {
+      progress.report({ message: 'Creating course folder...' })
+
+      await mcpClient?.callTool('init_course', {
+        course_id: selected.id,
+        directory: targetDir
+      })
+
+      progress.report({ message: 'Registering course...' })
+
+      // Register the course
+      const courseInfo: CourseInfo = {
+        id: selected.id,
+        name: selected.name,
+        courseCode: selected.course_code,
+        localPath: targetDir
+      }
+      courseTreeProvider.addCourse(courseInfo)
+
+      progress.report({ message: 'Configuring MCP...' })
+
+      // Configure MCP for Copilot
+      await configureMcpForCopilot(targetDir)
+    })
+
+    vscode.window.showInformationMessage(`Initialized course: ${selected.name} (MCP configured for Copilot)`)
+  } catch (error) {
+    vscode.window.showErrorMessage(`Failed to initialize: ${error}`)
+  }
 }
 
-async function pushPages() {
-    const folders = vscode.workspace.workspaceFolders;
-    if (!folders) {
-        vscode.window.showErrorMessage('Please open a folder first');
-        return;
+async function pullPages(item?: CourseTreeItem) {
+  // Check Canvas connection
+  if (!await requireCanvasConnection(extensionContext, 'pull pages from Canvas')) {
+    return
+  }
+
+  const coursePath = getCoursePath(item)
+  if (!coursePath) {
+    vscode.window.showErrorMessage('Please select a course or open a folder')
+    return
+  }
+
+  try {
+    const courseId = await getCourseId(item)
+    if (!courseId) {
+      vscode.window.showErrorMessage('Could not determine course ID. Please check .canvas.json')
+      return
     }
 
-    try {
-        await vscode.window.withProgress({
-            location: vscode.ProgressLocation.Notification,
-            title: 'Pushing pages to Canvas...',
-            cancellable: false
-        }, async () => {
-            const result = await mcpClient?.callTool('push_pages', {
-                directory: folders[0].uri.fsPath
-            });
-            return result;
-        });
-        vscode.window.showInformationMessage('Pages pushed successfully');
-    } catch (error) {
-        vscode.window.showErrorMessage(`Failed to push pages: ${error}`);
-    }
+    await vscode.window.withProgress({
+      location: vscode.ProgressLocation.Notification,
+      title: 'Pulling pages from Canvas...',
+      cancellable: false
+    }, async () => {
+      const result = await mcpClient?.callTool('pull_pages', {
+        course_id: courseId,
+        output_dir: coursePath
+      })
+      return result
+    })
+    vscode.window.showInformationMessage('Pages pulled successfully')
+    courseTreeProvider.refresh()
+  } catch (error) {
+    vscode.window.showErrorMessage(`Failed to pull pages: ${error}`)
+  }
 }
 
-async function showStatus() {
-    const folders = vscode.workspace.workspaceFolders;
-    if (!folders) {
-        vscode.window.showErrorMessage('Please open a folder first');
-        return;
+async function pushPages(item?: CourseTreeItem) {
+  // Check Canvas connection
+  if (!await requireCanvasConnection(extensionContext, 'push pages to Canvas')) {
+    return
+  }
+
+  const coursePath = getCoursePath(item)
+  if (!coursePath) {
+    vscode.window.showErrorMessage('Please select a course or open a folder')
+    return
+  }
+
+  try {
+    const courseId = await getCourseId(item)
+    if (!courseId) {
+      vscode.window.showErrorMessage('Could not determine course ID. Please check .canvas.json')
+      return
     }
 
-    try {
-        const result = await mcpClient?.callTool('sync_status', {
-            directory: folders[0].uri.fsPath
-        });
+    await vscode.window.withProgress({
+      location: vscode.ProgressLocation.Notification,
+      title: 'Pushing pages to Canvas...',
+      cancellable: false
+    }, async () => {
+      const result = await mcpClient?.callTool('push_pages', {
+        course_id: courseId,
+        input_dir: coursePath
+      })
+      return result
+    })
+    vscode.window.showInformationMessage('Pages pushed successfully')
+    courseTreeProvider.refresh()
+  } catch (error) {
+    vscode.window.showErrorMessage(`Failed to push pages: ${error}`)
+  }
+}
 
-        // Show status in output channel
-        const channel = vscode.window.createOutputChannel('Canvas Author');
-        channel.clear();
-        channel.appendLine('Canvas Sync Status');
-        channel.appendLine('==================');
-        channel.appendLine(JSON.stringify(result, null, 2));
-        channel.show();
-    } catch (error) {
-        vscode.window.showErrorMessage(`Failed to get status: ${error}`);
-    }
+async function showStatus(item?: CourseTreeItem) {
+  // Check Canvas connection
+  if (!await requireCanvasConnection(extensionContext, 'check sync status with Canvas')) {
+    return
+  }
+
+  const coursePath = getCoursePath(item)
+  if (!coursePath) {
+    vscode.window.showErrorMessage('Please select a course or open a folder')
+    return
+  }
+
+  const courseId = await getCourseId(item)
+  if (!courseId) {
+    vscode.window.showErrorMessage('Could not determine course ID. Please check .canvas.json')
+    return
+  }
+
+  try {
+    const result = await mcpClient?.callTool('sync_status', {
+      course_id: courseId,
+      local_dir: coursePath
+    })
+
+    // Show status in output channel
+    const channel = vscode.window.createOutputChannel('Canvas Author')
+    channel.clear()
+    channel.appendLine('Canvas Sync Status')
+    channel.appendLine('==================')
+    channel.appendLine(JSON.stringify(result, null, 2))
+    channel.show()
+  } catch (error) {
+    vscode.window.showErrorMessage(`Failed to get status: ${error}`)
+  }
 }
 
 async function listCourses() {
-    try {
-        const courses = await listCoursesQuiet();
-        if (!courses || courses.length === 0) {
-            vscode.window.showInformationMessage('No courses found');
-            return;
-        }
+  // Check Canvas connection
+  if (!await requireCanvasConnection(extensionContext, 'list courses from Canvas')) {
+    return
+  }
 
-        const channel = vscode.window.createOutputChannel('Canvas Author');
-        channel.clear();
-        channel.appendLine('Available Courses');
-        channel.appendLine('=================');
-        for (const course of courses) {
-            channel.appendLine(`${course.id}: ${course.name} (${course.course_code})`);
-        }
-        channel.show();
-    } catch (error) {
-        vscode.window.showErrorMessage(`Failed to list courses: ${error}`);
+  try {
+    const courses = await listCoursesQuiet()
+    if (!courses) {
+      await handleConnectionFailure(extensionContext, 'list courses from Canvas')
+      return
     }
+    if (courses.length === 0) {
+      vscode.window.showInformationMessage('No courses found in your Canvas account.')
+      return
+    }
+
+    const channel = vscode.window.createOutputChannel('Canvas Author')
+    channel.clear()
+    channel.appendLine('Available Courses')
+    channel.appendLine('=================')
+    for (const course of courses) {
+      channel.appendLine(`${course.id}: ${course.name} (${course.course_code})`)
+    }
+    channel.show()
+  } catch (error) {
+    vscode.window.showErrorMessage(`Failed to list courses: ${error}`)
+  }
 }
 
 async function listCoursesQuiet(): Promise<Course[] | undefined> {
-    try {
-        const result = await mcpClient?.callTool<ListCoursesResponse>('list_courses', {});
-        return result?.courses;
-    } catch (error) {
-        console.error('Failed to list courses:', error);
-        return undefined;
-    }
+  try {
+    const result = await mcpClient?.callTool<ListCoursesResponse>('list_courses', {})
+    // result is now directly the array of courses
+    return result
+  } catch (error) {
+    console.error('Failed to list courses:', error)
+    return undefined
+  }
 }
 
-async function pullModules() {
-    const folders = vscode.workspace.workspaceFolders;
-    if (!folders) {
-        vscode.window.showErrorMessage('Please open a folder first');
-        return;
-    }
+async function pullModules(item?: CourseTreeItem) {
+  // Check Canvas connection
+  if (!await requireCanvasConnection(extensionContext, 'pull modules from Canvas')) {
+    return
+  }
 
-    try {
-        const result = await vscode.window.withProgress({
-            location: vscode.ProgressLocation.Notification,
-            title: 'Pulling modules from Canvas...',
-            cancellable: false
-        }, async () => {
-            return await mcpClient?.callTool<PullModulesResponse>('pull_modules', {
-                directory: folders[0].uri.fsPath
-            });
-        });
+  const coursePath = getCoursePath(item)
+  if (!coursePath) {
+    vscode.window.showErrorMessage('Please select a course or open a folder')
+    return
+  }
 
-        const moduleCount = result?.modules_count ?? 0;
-        const itemCount = result?.items_count ?? 0;
-        vscode.window.showInformationMessage(
-            `Pulled ${moduleCount} modules with ${itemCount} items to modules.yaml`
-        );
-    } catch (error) {
-        vscode.window.showErrorMessage(`Failed to pull modules: ${error}`);
-    }
+  const courseId = await getCourseId(item)
+  if (!courseId) {
+    vscode.window.showErrorMessage('Could not determine course ID. Please check .canvas.json')
+    return
+  }
+
+  try {
+    const result = await vscode.window.withProgress({
+      location: vscode.ProgressLocation.Notification,
+      title: 'Pulling modules from Canvas...',
+      cancellable: false
+    }, async () => {
+      return await mcpClient?.callTool<PullModulesResponse>('pull_modules', {
+        course_id: courseId,
+        output_dir: coursePath
+      })
+    })
+
+    const moduleCount = result?.modules_count ?? 0
+    const itemCount = result?.items_count ?? 0
+    vscode.window.showInformationMessage(
+      `Pulled ${moduleCount} modules with ${itemCount} items to modules.yaml`
+    )
+    courseTreeProvider.refresh()
+  } catch (error) {
+    vscode.window.showErrorMessage(`Failed to pull modules: ${error}`)
+  }
 }
 
-async function pushModules() {
-    const folders = vscode.workspace.workspaceFolders;
-    if (!folders) {
-        vscode.window.showErrorMessage('Please open a folder first');
-        return;
+async function pushModules(item?: CourseTreeItem) {
+  // Check Canvas connection
+  if (!await requireCanvasConnection(extensionContext, 'push modules to Canvas')) {
+    return
+  }
+
+  const coursePath = getCoursePath(item)
+  if (!coursePath) {
+    vscode.window.showErrorMessage('Please select a course or open a folder')
+    return
+  }
+
+  const courseId = await getCourseId(item)
+  if (!courseId) {
+    vscode.window.showErrorMessage('Could not determine course ID. Please check .canvas.json')
+    return
+  }
+
+  // Ask about delete behavior
+  const deleteChoice = await vscode.window.showQuickPick([
+    { label: 'Keep', description: 'Keep modules in Canvas that are not in local file', value: false },
+    { label: 'Delete', description: 'Delete modules in Canvas that are not in local file', value: true }
+  ], {
+    placeHolder: 'What to do with modules in Canvas not in modules.yaml?'
+  })
+
+  if (!deleteChoice) {
+    return
+  }
+
+  try {
+    const result = await vscode.window.withProgress({
+      location: vscode.ProgressLocation.Notification,
+      title: 'Pushing modules to Canvas...',
+      cancellable: false
+    }, async () => {
+      return await mcpClient?.callTool<PushModulesResponse>('push_modules', {
+        course_id: courseId,
+        input_dir: coursePath,
+        delete_missing: deleteChoice.value
+      })
+    })
+
+    const created = result?.created?.length ?? 0
+    const updated = result?.updated?.length ?? 0
+    const deleted = result?.deleted?.length ?? 0
+    const errors = result?.errors?.length ?? 0
+
+    let message = `Modules: ${created} created, ${updated} updated`
+    if (deleted > 0) {
+      message += `, ${deleted} deleted`
     }
-
-    // Ask about delete behavior
-    const deleteChoice = await vscode.window.showQuickPick([
-        { label: 'Keep', description: 'Keep modules in Canvas that are not in local file', value: false },
-        { label: 'Delete', description: 'Delete modules in Canvas that are not in local file', value: true }
-    ], {
-        placeHolder: 'What to do with modules in Canvas not in modules.yaml?'
-    });
-
-    if (!deleteChoice) {
-        return;
+    if (errors > 0) {
+      message += ` (${errors} errors)`
+      vscode.window.showWarningMessage(message)
+    } else {
+      vscode.window.showInformationMessage(message)
     }
-
-    try {
-        const result = await vscode.window.withProgress({
-            location: vscode.ProgressLocation.Notification,
-            title: 'Pushing modules to Canvas...',
-            cancellable: false
-        }, async () => {
-            return await mcpClient?.callTool<PushModulesResponse>('push_modules', {
-                directory: folders[0].uri.fsPath,
-                delete_missing: deleteChoice.value
-            });
-        });
-
-        const created = result?.created?.length ?? 0;
-        const updated = result?.updated?.length ?? 0;
-        const deleted = result?.deleted?.length ?? 0;
-        const errors = result?.errors?.length ?? 0;
-
-        let message = `Modules: ${created} created, ${updated} updated`;
-        if (deleted > 0) {
-            message += `, ${deleted} deleted`;
-        }
-        if (errors > 0) {
-            message += ` (${errors} errors)`;
-            vscode.window.showWarningMessage(message);
-        } else {
-            vscode.window.showInformationMessage(message);
-        }
-    } catch (error) {
-        vscode.window.showErrorMessage(`Failed to push modules: ${error}`);
-    }
+    courseTreeProvider.refresh()
+  } catch (error) {
+    vscode.window.showErrorMessage(`Failed to push modules: ${error}`)
+  }
 }
 
-async function showModuleStatus() {
-    const folders = vscode.workspace.workspaceFolders;
-    if (!folders) {
-        vscode.window.showErrorMessage('Please open a folder first');
-        return;
+async function showModuleStatus(item?: CourseTreeItem) {
+  // Check Canvas connection
+  if (!await requireCanvasConnection(extensionContext, 'check module status with Canvas')) {
+    return
+  }
+
+  const coursePath = getCoursePath(item)
+  if (!coursePath) {
+    vscode.window.showErrorMessage('Please select a course or open a folder')
+    return
+  }
+
+  const courseId = await getCourseId(item)
+  if (!courseId) {
+    vscode.window.showErrorMessage('Could not determine course ID. Please check .canvas.json')
+    return
+  }
+
+  try {
+    const result = await mcpClient?.callTool<ModuleStatusResponse>('module_sync_status', {
+      course_id: courseId,
+      local_dir: coursePath
+    })
+
+    const channel = vscode.window.createOutputChannel('Canvas Author')
+    channel.clear()
+    channel.appendLine('Canvas Module Sync Status')
+    channel.appendLine('=========================')
+    channel.appendLine('')
+
+    const summary = result?.summary
+    if (summary) {
+      channel.appendLine(`Synced: ${summary.synced_count}`)
+      channel.appendLine(`Canvas only: ${summary.canvas_only_count}`)
+      channel.appendLine(`Local only: ${summary.local_only_count}`)
+      channel.appendLine('')
     }
 
-    try {
-        const result = await mcpClient?.callTool<ModuleStatusResponse>('module_status', {
-            directory: folders[0].uri.fsPath
-        });
-
-        const channel = vscode.window.createOutputChannel('Canvas Author');
-        channel.clear();
-        channel.appendLine('Canvas Module Sync Status');
-        channel.appendLine('=========================');
-        channel.appendLine('');
-
-        const summary = result?.summary;
-        if (summary) {
-            channel.appendLine(`Synced: ${summary.synced_count}`);
-            channel.appendLine(`Canvas only: ${summary.canvas_only_count}`);
-            channel.appendLine(`Local only: ${summary.local_only_count}`);
-            channel.appendLine('');
-        }
-
-        if (result?.synced && result.synced.length > 0) {
-            channel.appendLine('Synced Modules:');
-            for (const m of result.synced) {
-                channel.appendLine(`  + ${m.name}`);
-            }
-            channel.appendLine('');
-        }
-
-        if (result?.canvas_only && result.canvas_only.length > 0) {
-            channel.appendLine('Canvas Only (not in local):');
-            for (const m of result.canvas_only) {
-                channel.appendLine(`  > ${m.name}`);
-            }
-            channel.appendLine('');
-        }
-
-        if (result?.local_only && result.local_only.length > 0) {
-            channel.appendLine('Local Only (not in Canvas):');
-            for (const m of result.local_only) {
-                channel.appendLine(`  < ${m.name}`);
-            }
-        }
-
-        channel.show();
-    } catch (error) {
-        vscode.window.showErrorMessage(`Failed to get module status: ${error}`);
+    if (result?.synced && result.synced.length > 0) {
+      channel.appendLine('Synced Modules:')
+      for (const m of result.synced) {
+        channel.appendLine(`  + ${m.name}`)
+      }
+      channel.appendLine('')
     }
+
+    if (result?.canvas_only && result.canvas_only.length > 0) {
+      channel.appendLine('Canvas Only (not in local):')
+      for (const m of result.canvas_only) {
+        channel.appendLine(`  > ${m.name}`)
+      }
+      channel.appendLine('')
+    }
+
+    if (result?.local_only && result.local_only.length > 0) {
+      channel.appendLine('Local Only (not in Canvas):')
+      for (const m of result.local_only) {
+        channel.appendLine(`  < ${m.name}`)
+      }
+    }
+
+    channel.show()
+  } catch (error) {
+    vscode.window.showErrorMessage(`Failed to get module status: ${error}`)
+  }
+}
+
+async function pullQuizzes(item?: CourseTreeItem) {
+  // Check Canvas connection
+  if (!await requireCanvasConnection(extensionContext, 'pull quizzes from Canvas')) {
+    return
+  }
+
+  const coursePath = getCoursePath(item)
+  if (!coursePath) {
+    vscode.window.showErrorMessage('Please select a course or open a folder')
+    return
+  }
+
+  const courseId = await getCourseId(item)
+  if (!courseId) {
+    vscode.window.showErrorMessage('Could not determine course ID. Please check .canvas.json')
+    return
+  }
+
+  try {
+    const result = await vscode.window.withProgress({
+      location: vscode.ProgressLocation.Notification,
+      title: 'Pulling quizzes from Canvas...',
+      cancellable: false
+    }, async () => {
+      return await mcpClient?.callTool<PullQuizzesResponse>('pull_quizzes', {
+        course_id: courseId,
+        output_dir: coursePath
+      })
+    })
+
+    const pulled = result?.pulled?.length ?? 0
+    const skipped = result?.skipped?.length ?? 0
+    const errors = result?.errors?.length ?? 0
+
+    let message = `Pulled ${pulled} quizzes`
+    if (skipped > 0) {
+      message += `, ${skipped} skipped`
+    }
+    if (errors > 0) {
+      message += ` (${errors} errors)`
+      vscode.window.showWarningMessage(message)
+    } else {
+      vscode.window.showInformationMessage(message)
+    }
+    courseTreeProvider.refresh()
+  } catch (error) {
+    vscode.window.showErrorMessage(`Failed to pull quizzes: ${error}`)
+  }
+}
+
+async function pushQuizzes(item?: CourseTreeItem) {
+  // Check Canvas connection
+  if (!await requireCanvasConnection(extensionContext, 'push quizzes to Canvas')) {
+    return
+  }
+
+  const coursePath = getCoursePath(item)
+  if (!coursePath) {
+    vscode.window.showErrorMessage('Please select a course or open a folder')
+    return
+  }
+
+  const courseId = await getCourseId(item)
+  if (!courseId) {
+    vscode.window.showErrorMessage('Could not determine course ID. Please check .canvas.json')
+    return
+  }
+
+  try {
+    const result = await vscode.window.withProgress({
+      location: vscode.ProgressLocation.Notification,
+      title: 'Pushing quizzes to Canvas...',
+      cancellable: false
+    }, async () => {
+      return await mcpClient?.callTool<PushQuizzesResponse>('push_quizzes', {
+        course_id: courseId,
+        input_dir: coursePath
+      })
+    })
+
+    const created = result?.created?.length ?? 0
+    const updated = result?.updated?.length ?? 0
+    const errors = result?.errors?.length ?? 0
+
+    let message = `Quizzes: ${created} created, ${updated} updated`
+    if (errors > 0) {
+      message += ` (${errors} errors)`
+      vscode.window.showWarningMessage(message)
+    } else {
+      vscode.window.showInformationMessage(message)
+    }
+    courseTreeProvider.refresh()
+  } catch (error) {
+    vscode.window.showErrorMessage(`Failed to push quizzes: ${error}`)
+  }
+}
+
+async function pullRubrics(item?: CourseTreeItem) {
+  // Check Canvas connection
+  if (!await requireCanvasConnection(extensionContext, 'pull rubrics from Canvas')) {
+    return
+  }
+
+  const coursePath = getCoursePath(item)
+  if (!coursePath) {
+    vscode.window.showErrorMessage('Please select a course or open a folder')
+    return
+  }
+
+  const courseId = await getCourseId(item)
+  if (!courseId) {
+    vscode.window.showErrorMessage('Could not determine course ID. Please check .canvas.json')
+    return
+  }
+
+  try {
+    const result = await vscode.window.withProgress({
+      location: vscode.ProgressLocation.Notification,
+      title: 'Pulling rubrics from Canvas...',
+      cancellable: false
+    }, async () => {
+      return await mcpClient?.callTool<PullRubricsResponse>('pull_rubrics', {
+        course_id: courseId,
+        output_dir: coursePath
+      })
+    })
+
+    const pulled = result?.pulled?.length ?? 0
+    const skipped = result?.skipped?.length ?? 0
+    const noRubric = result?.no_rubric?.length ?? 0
+    const errors = result?.errors?.length ?? 0
+
+    let message = `Pulled ${pulled} rubrics`
+    if (skipped > 0) {
+      message += `, ${skipped} skipped`
+    }
+    if (noRubric > 0) {
+      message += ` (${noRubric} assignments have no rubric)`
+    }
+    if (errors > 0) {
+      message += ` (${errors} errors)`
+      vscode.window.showWarningMessage(message)
+    } else {
+      vscode.window.showInformationMessage(message)
+    }
+    courseTreeProvider.refresh()
+  } catch (error) {
+    vscode.window.showErrorMessage(`Failed to pull rubrics: ${error}`)
+  }
+}
+
+async function pushRubrics(item?: CourseTreeItem) {
+  // Check Canvas connection
+  if (!await requireCanvasConnection(extensionContext, 'push rubrics to Canvas')) {
+    return
+  }
+
+  const coursePath = getCoursePath(item)
+  if (!coursePath) {
+    vscode.window.showErrorMessage('Please select a course or open a folder')
+    return
+  }
+
+  const courseId = await getCourseId(item)
+  if (!courseId) {
+    vscode.window.showErrorMessage('Could not determine course ID. Please check .canvas.json')
+    return
+  }
+
+  try {
+    const result = await vscode.window.withProgress({
+      location: vscode.ProgressLocation.Notification,
+      title: 'Pushing rubrics to Canvas...',
+      cancellable: false
+    }, async () => {
+      return await mcpClient?.callTool<PushRubricsResponse>('push_rubrics', {
+        course_id: courseId,
+        input_dir: coursePath
+      })
+    })
+
+    const created = result?.created?.length ?? 0
+    const updated = result?.updated?.length ?? 0
+    const skipped = result?.skipped?.length ?? 0
+    const errors = result?.errors?.length ?? 0
+
+    let message = `Rubrics: ${created} created, ${updated} updated`
+    if (skipped > 0) {
+      message += `, ${skipped} skipped`
+    }
+    if (errors > 0) {
+      message += ` (${errors} errors)`
+      vscode.window.showWarningMessage(message)
+    } else {
+      vscode.window.showInformationMessage(message)
+    }
+    courseTreeProvider.refresh()
+  } catch (error) {
+    vscode.window.showErrorMessage(`Failed to push rubrics: ${error}`)
+  }
+}
+
+async function showRubricStatus(item?: CourseTreeItem) {
+  // Check Canvas connection
+  if (!await requireCanvasConnection(extensionContext, 'check rubric status with Canvas')) {
+    return
+  }
+
+  const coursePath = getCoursePath(item)
+  if (!coursePath) {
+    vscode.window.showErrorMessage('Please select a course or open a folder')
+    return
+  }
+
+  const courseId = await getCourseId(item)
+  if (!courseId) {
+    vscode.window.showErrorMessage('Could not determine course ID. Please check .canvas.json')
+    return
+  }
+
+  try {
+    const result = await mcpClient?.callTool<RubricStatusResponse>('rubric_sync_status', {
+      course_id: courseId,
+      local_dir: coursePath
+    })
+
+    const channel = vscode.window.createOutputChannel('Canvas Author')
+    channel.clear()
+    channel.appendLine('Canvas Rubric Sync Status')
+    channel.appendLine('=========================')
+    channel.appendLine('')
+
+    const summary = result?.summary
+    if (summary) {
+      channel.appendLine(`Synced: ${summary.synced_count}`)
+      channel.appendLine(`Canvas only: ${summary.canvas_only_count}`)
+      channel.appendLine(`Local only: ${summary.local_only_count}`)
+      channel.appendLine('')
+    }
+
+    if (result?.synced && result.synced.length > 0) {
+      channel.appendLine('Synced Rubrics:')
+      for (const r of result.synced) {
+        channel.appendLine(`  + ${r.assignment_name}`)
+      }
+      channel.appendLine('')
+    }
+
+    if (result?.canvas_only && result.canvas_only.length > 0) {
+      channel.appendLine('Canvas Only (not in local):')
+      for (const r of result.canvas_only) {
+        channel.appendLine(`  > ${r.assignment_name}`)
+      }
+      channel.appendLine('')
+    }
+
+    if (result?.local_only && result.local_only.length > 0) {
+      channel.appendLine('Local Only (not in Canvas):')
+      for (const r of result.local_only) {
+        channel.appendLine(`  < ${r.assignment_name}`)
+      }
+    }
+
+    channel.show()
+  } catch (error) {
+    vscode.window.showErrorMessage(`Failed to get rubric status: ${error}`)
+  }
 }
 
 export function deactivate() {
-    mcpClient?.dispose();
+  mcpClient?.dispose()
+  courseTreeProvider?.dispose()
 }
