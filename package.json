@@ -69,12 +69,12 @@
       {
         "view": "canvasAuthorCourses",
         "contents": "Welcome to Canvas Author!\n\nCreate courses offline or connect to Canvas.\n\n[Create Local Course](command:canvas-author.createLocalCourse)\n[Clone from Git](command:canvas-author.cloneFromRemote)\n\n---\n\nTo sync with Canvas LMS:\n[Connect to Canvas](command:canvas-author.showOnboarding)",
-        "when": "!canvas-author.hasToken"
+        "when": "!canvas-author.hasCourses && !canvas-author.hasToken"
       },
       {
         "view": "canvasAuthorCourses",
         "contents": "No courses yet.\n\n[Create Local Course](command:canvas-author.createLocalCourse)\n[Import from Canvas](command:canvas-author.addCourse)\n[Clone from Git](command:canvas-author.cloneFromRemote)",
-        "when": "canvas-author.hasToken"
+        "when": "!canvas-author.hasCourses && canvas-author.hasToken"
       }
     ],
     "menus": {
@@ -155,6 +155,16 @@
           "command": "canvas-author.createPage",
           "when": "view == canvasAuthorCourses && viewItem == category",
           "group": "create@1"
+        },
+        {
+          "command": "canvas-author.pullRubrics",
+          "when": "view == canvasAuthorCourses && viewItem == rubric",
+          "group": "sync@1"
+        },
+        {
+          "command": "canvas-author.pushRubrics",
+          "when": "view == canvasAuthorCourses && viewItem == rubric",
+          "group": "sync@2"
         }
       ]
     },
