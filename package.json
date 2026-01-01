@@ -1,24 +1,163 @@
 {
   "name": "canvas-author-code",
   "displayName": "Canvas Author",
-  "description": "Author and sync Canvas LMS content from VS Code",
-  "version": "0.1.0",
+  "description": "Author and sync Canvas LMS content from VS Code - manage wiki pages, quizzes, modules, and course settings with markdown",
+  "version": "0.1.1",
   "publisher": "lucidbard",
+  "license": "GPL-3.0-or-later",
+  "author": {
+    "name": "John Murray",
+    "email": "lucidbard@users.noreply.github.com"
+  },
   "repository": {
     "type": "git",
     "url": "https://github.com/lucidbard/canvas-author-code"
   },
+  "bugs": {
+    "url": "https://github.com/lucidbard/canvas-author-code/issues"
+  },
+  "homepage": "https://github.com/lucidbard/canvas-author-code#readme",
   "engines": {
     "vscode": "^1.85.0"
   },
   "categories": [
+    "Education",
     "Other"
   ],
+  "keywords": [
+    "canvas",
+    "lms",
+    "education",
+    "markdown",
+    "instructure",
+    "course",
+    "sync"
+  ],
   "activationEvents": [
-    "workspaceContains:.canvas.json"
+    "workspaceContains:.canvas.json",
+    "onView:canvasAuthorCourses"
   ],
   "main": "./out/extension.js",
   "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "canvas-author",
+          "title": "Canvas Author",
+          "icon": "$(book)"
+        }
+      ]
+    },
+    "views": {
+      "canvas-author": [
+        {
+          "id": "canvasAuthorCourses",
+          "name": "Courses",
+          "icon": "$(book)",
+          "contextualTitle": "Canvas Author"
+        },
+        {
+          "id": "canvasAuthorMetadata",
+          "name": "Properties",
+          "icon": "$(symbol-property)",
+          "contextualTitle": "Canvas Author",
+          "type": "webview"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "canvasAuthorCourses",
+        "contents": "Welcome to Canvas Author!\n\nCreate courses offline or connect to Canvas.\n\n[Create Local Course](command:canvas-author.createLocalCourse)\n[Clone from Git](command:canvas-author.cloneFromRemote)\n\n---\n\nTo sync with Canvas LMS:\n[Connect to Canvas](command:canvas-author.showOnboarding)",
+        "when": "!canvas-author.hasToken"
+      },
+      {
+        "view": "canvasAuthorCourses",
+        "contents": "No courses yet.\n\n[Create Local Course](command:canvas-author.createLocalCourse)\n[Import from Canvas](command:canvas-author.addCourse)\n[Clone from Git](command:canvas-author.cloneFromRemote)",
+        "when": "canvas-author.hasToken"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "canvas-author.refreshCourses",
+          "when": "view == canvasAuthorCourses",
+          "group": "navigation"
+        },
+        {
+          "command": "canvas-author.addCourse",
+          "when": "view == canvasAuthorCourses",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "canvas-author.pull",
+          "when": "view == canvasAuthorCourses && viewItem == course",
+          "group": "sync@1"
+        },
+        {
+          "command": "canvas-author.push",
+          "when": "view == canvasAuthorCourses && viewItem == course",
+          "group": "sync@2"
+        },
+        {
+          "command": "canvas-author.status",
+          "when": "view == canvasAuthorCourses && viewItem == course",
+          "group": "sync@3"
+        },
+        {
+          "command": "canvas-author.linkToCanvas",
+          "when": "view == canvasAuthorCourses && viewItem == course",
+          "group": "sync@4"
+        },
+        {
+          "command": "canvas-author.pullRubrics",
+          "when": "view == canvasAuthorCourses && viewItem == course",
+          "group": "sync@5"
+        },
+        {
+          "command": "canvas-author.pushRubrics",
+          "when": "view == canvasAuthorCourses && viewItem == course",
+          "group": "sync@6"
+        },
+        {
+          "command": "canvas-author.rubricStatus",
+          "when": "view == canvasAuthorCourses && viewItem == course",
+          "group": "sync@7"
+        },
+        {
+          "command": "canvas-author.createPage",
+          "when": "view == canvasAuthorCourses && viewItem == course",
+          "group": "create@1"
+        },
+        {
+          "command": "canvas-author.createQuiz",
+          "when": "view == canvasAuthorCourses && viewItem == course",
+          "group": "create@2"
+        },
+        {
+          "command": "canvas-author.openInExplorer",
+          "when": "view == canvasAuthorCourses && viewItem == course",
+          "group": "navigation@1"
+        },
+        {
+          "command": "canvas-author.configureMcp",
+          "when": "view == canvasAuthorCourses && viewItem == course",
+          "group": "navigation@2"
+        },
+        {
+          "command": "canvas-author.removeCourse",
+          "when": "view == canvasAuthorCourses && viewItem == course",
+          "group": "z_destructive"
+        },
+        {
+          "command": "canvas-author.createPage",
+          "when": "view == canvasAuthorCourses && viewItem == category",
+          "group": "create@1"
+        }
+      ]
+    },
     "commands": [
       {
         "command": "canvas-author.init",
@@ -51,6 +190,81 @@
       {
         "command": "canvas-author.moduleStatus",
         "title": "Canvas: Show Module Status"
+      },
+      {
+        "command": "canvas-author.pullQuizzes",
+        "title": "Canvas: Pull Quizzes"
+      },
+      {
+        "command": "canvas-author.pushQuizzes",
+        "title": "Canvas: Push Quizzes"
+      },
+      {
+        "command": "canvas-author.pullRubrics",
+        "title": "Canvas: Pull Rubrics"
+      },
+      {
+        "command": "canvas-author.pushRubrics",
+        "title": "Canvas: Push Rubrics"
+      },
+      {
+        "command": "canvas-author.rubricStatus",
+        "title": "Canvas: Show Rubric Status"
+      },
+      {
+        "command": "canvas-author.addCourse",
+        "title": "Canvas: Add Course",
+        "icon": "$(add)"
+      },
+      {
+        "command": "canvas-author.refreshCourses",
+        "title": "Canvas: Refresh Courses",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "canvas-author.removeCourse",
+        "title": "Canvas: Remove Course from List"
+      },
+      {
+        "command": "canvas-author.openInExplorer",
+        "title": "Canvas: Open in Explorer"
+      },
+      {
+        "command": "canvas-author.cloneFromRemote",
+        "title": "Canvas: Clone Course from Remote"
+      },
+      {
+        "command": "canvas-author.configureMcp",
+        "title": "Canvas: Configure MCP for Copilot"
+      },
+      {
+        "command": "canvas-author.configureCanvas",
+        "title": "Canvas: Configure Canvas Connection",
+        "icon": "$(key)"
+      },
+      {
+        "command": "canvas-author.createLocalCourse",
+        "title": "Canvas: Create Local Course",
+        "icon": "$(new-folder)"
+      },
+      {
+        "command": "canvas-author.createPage",
+        "title": "Canvas: Create New Page",
+        "icon": "$(new-file)"
+      },
+      {
+        "command": "canvas-author.createQuiz",
+        "title": "Canvas: Create New Quiz",
+        "icon": "$(new-file)"
+      },
+      {
+        "command": "canvas-author.linkToCanvas",
+        "title": "Canvas: Link to Canvas Course"
+      },
+      {
+        "command": "canvas-author.showOnboarding",
+        "title": "Canvas: Connect to Canvas",
+        "icon": "$(plug)"
       }
     ],
     "configuration": {
@@ -59,15 +273,21 @@
         "canvas-author.pythonPath": {
           "type": "string",
           "default": "python3",
-          "description": "Path to Python interpreter with canvas-mcp installed"
+          "description": "Path to Python interpreter with canvas-author installed"
         },
         "canvas-author.canvasDomain": {
           "type": "string",
           "default": "",
           "description": "Canvas LMS domain (e.g., canvas.instructure.com)"
+        },
+        "canvas-author.defaultStoragePath": {
+          "type": "string",
+          "default": "",
+          "description": "Default path for storing courses (defaults to ~/.canvas-author/courses)"
         }
       }
-    }
+    },
+    "secretStorage": true
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",
