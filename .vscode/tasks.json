@@ -1,0 +1,32 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "type": "npm",
+      "script": "compile",
+      "path": "",
+      "problemMatcher": "$tsc",
+      "label": "npm: compile",
+      "group": "build"
+    },
+    {
+      "type": "npm",
+      "script": "watch",
+      "path": "",
+      "problemMatcher": "$tsc-watch",
+      "isBackground": true,
+      "label": "npm: watch",
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      }
+    },
+    {
+      "type": "npm",
+      "script": "lint",
+      "path": "",
+      "problemMatcher": "$eslint-stylish",
+      "label": "npm: lint"
+    }
+  ]
+}

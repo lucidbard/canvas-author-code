@@ -12,10 +12,17 @@ Author and sync Canvas LMS content directly from VS Code, including wiki pages a
 ## Prerequisites
 
 - **Node.js** 18+ (for building the extension)
-- **Python** 3.10+ with `canvas-mcp` installed
+- **Python** 3.10+ with `canvas-author` installed
 - **Canvas API token** (generate at Canvas > Profile > Settings > New Access Token)
 
 ## Installation
+
+### From VS Code Marketplace (Recommended)
+
+1. Open VS Code
+2. Go to Extensions (`Ctrl+Shift+X`)
+3. Search for "Canvas Author"
+4. Click Install
 
 ### From Source
 
@@ -35,9 +42,9 @@ Author and sync Canvas LMS content directly from VS Code, including wiki pages a
    npm run compile
    ```
 
-4. Install the canvas-mcp Python package:
+4. Install the canvas-author Python package:
    ```bash
-   pip install canvas-mcp
+   pip install canvas-author
    ```
 
 5. Set up Canvas credentials in a `.env` file in your course directory:
@@ -157,7 +164,7 @@ modules:
 
 | Setting | Description | Default |
 |---------|-------------|---------|
-| `canvas-author.pythonPath` | Path to Python with canvas-mcp | `python3` |
+| `canvas-author.pythonPath` | Path to Python with canvas-author | `python3` |
 | `canvas-author.canvasDomain` | Your Canvas LMS domain | (empty) |
 
 ## Development
@@ -191,7 +198,7 @@ npm test
 canvas-author-code/
   src/
     extension.ts    # Extension entry point, command handlers
-    mcpClient.ts    # MCP client for canvas-mcp communication
+    mcpClient.ts    # MCP client for canvas-author communication
     test/
       runTest.ts    # Test runner
       suite/
@@ -202,7 +209,7 @@ canvas-author-code/
 
 ## How It Works
 
-This extension communicates with the `canvas-mcp` Python package via the Model Context Protocol (MCP). When activated, it spawns `canvas-mcp server` as a subprocess and sends commands via JSON-RPC.
+This extension communicates with the `canvas-author` Python package via the Model Context Protocol (MCP). When activated, it spawns `canvas-author server` as a subprocess and sends commands via JSON-RPC.
 
 The workflow:
 1. Extension spawns `python -m canvas_mcp.server` subprocess
@@ -211,11 +218,11 @@ The workflow:
 
 ## Troubleshooting
 
-### "canvas-mcp not found"
+### "canvas-author not found"
 
-Ensure canvas-mcp is installed in your Python environment:
+Ensure canvas-author is installed in your Python environment:
 ```bash
-pip install canvas-mcp
+pip install canvas-author
 ```
 
 ### "No courses found"
@@ -225,9 +232,9 @@ Check that your `.env` file contains valid credentials and is in the workspace f
 ### "Failed to connect to MCP server"
 
 1. Check the Python path in settings
-2. Ensure canvas-mcp is installed: `python -c "import canvas_mcp"`
+2. Ensure canvas-author is installed: `python -c "import canvas_mcp"`
 3. Check the Output panel (View > Output > Canvas Author) for errors
 
 ## License
 
-MIT
+GPL-3.0-or-later - See [LICENSE](LICENSE) for details.
