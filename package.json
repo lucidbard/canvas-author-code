@@ -165,6 +165,11 @@
           "command": "canvas-author.pushRubrics",
           "when": "view == canvasAuthorCourses && viewItem == rubric",
           "group": "sync@2"
+        },
+        {
+          "command": "canvas-author.openSettings",
+          "when": "view == canvasAuthorCourses && viewItem == settings",
+          "group": "navigation@1"
         }
       ]
     },
@@ -270,6 +275,11 @@
       {
         "command": "canvas-author.linkToCanvas",
         "title": "Canvas: Link to Canvas Course"
+      },
+      {
+        "command": "canvas-author.openSettings",
+        "title": "Canvas: Open Course Settings",
+        "icon": "$(gear)"
       },
       {
         "command": "canvas-author.showOnboarding",

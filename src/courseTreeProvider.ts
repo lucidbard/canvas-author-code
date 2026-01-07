@@ -132,7 +132,14 @@ export class CourseTreeItem extends vscode.TreeItem {
   }
 
   private setCommand() {
-    if (this.resourcePath && (this.itemType === 'page' || this.itemType === 'quiz' || this.itemType === 'assignment' || this.itemType === 'rubric' || this.itemType === 'settings' || this.itemType === 'moduleItem')) {
+    if (this.itemType === 'settings') {
+      // Settings uses a special command that handles file creation
+      this.command = {
+        command: 'canvas-author.openSettings',
+        title: 'Open Settings',
+        arguments: [this]
+      }
+    } else if (this.resourcePath && (this.itemType === 'page' || this.itemType === 'quiz' || this.itemType === 'assignment' || this.itemType === 'rubric' || this.itemType === 'moduleItem')) {
       this.command = {
         command: 'vscode.open',
         title: 'Open File',

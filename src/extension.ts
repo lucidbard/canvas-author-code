@@ -178,6 +178,7 @@ export async function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('canvas-author.createPage', (item?: CourseTreeItem) => createPage(item)),
     vscode.commands.registerCommand('canvas-author.createQuiz', (item?: CourseTreeItem) => createQuiz(item)),
     vscode.commands.registerCommand('canvas-author.linkToCanvas', (item?: CourseTreeItem) => linkToCanvas(item, context)),
+    vscode.commands.registerCommand('canvas-author.openSettings', (item?: CourseTreeItem) => openSettings(item)),
 
     // Onboarding command
     vscode.commands.registerCommand('canvas-author.showOnboarding', () => OnboardingPanel.createOrShow(context))
@@ -859,6 +860,103 @@ b. False
   await vscode.window.showTextDocument(doc)
 
   vscode.window.showInformationMessage(`Created quiz: ${title}`)
+}
+
+async function openSettings(item?: CourseTreeItem) {
+  const courseInfo = item?.courseInfo
+  if (!courseInfo) {
+    vscode.window.showErrorMessage('Please select a course first')
+    return
+  }
+
+  const settingsPath = path.join(courseInfo.localPath, 'course.yaml')
+
+  // Check if course.yaml exists
+  if (fs.existsSync(settingsPath)) {
+    // Open existing file
+    const doc = await vscode.workspace.openTextDocument(settingsPath)
+    await vscode.window.showTextDocument(doc)
+    return
+  }
+
+  // File doesn't exist - offer to pull settings from Canvas
+  const choice = await vscode.window.showInformationMessage(
+    'Course settings file (course.yaml) not found. Would you like to pull settings from Canvas?',
+    'Pull Settings',
+    'Create Empty',
+    'Cancel'
+  )
+
+  if (choice === 'Cancel' || !choice) {
+    return
+  }
+
+  if (choice === 'Pull Settings') {
+    // Check if we can connect to Canvas
+    if (!await requireCanvasConnection(extensionContext, 'pull course settings')) {
+      return
+    }
+
+    if (!mcpClient) {
+      vscode.window.showErrorMessage('Canvas connection not available')
+      return
+    }
+
+    try {
+      await vscode.window.withProgress({
+        location: vscode.ProgressLocation.Notification,
+        title: 'Pulling course settings from Canvas...',
+        cancellable: false
+      }, async () => {
+        const result = await mcpClient?.callTool('pull_course', {
+          course_id: courseInfo.id,
+          directory: courseInfo.localPath
+        })
+        console.log('Pull course result:', result)
+        return result
+      })
+
+      courseTreeProvider.refresh()
+
+      if (fs.existsSync(settingsPath)) {
+        const doc = await vscode.workspace.openTextDocument(settingsPath)
+        await vscode.window.showTextDocument(doc)
+        vscode.window.showInformationMessage('Course settings pulled from Canvas')
+      } else {
+        vscode.window.showWarningMessage('Pull completed but course.yaml was not created')
+      }
+    } catch (error) {
+      vscode.window.showErrorMessage(`Failed to pull settings: ${error}`)
+    }
+  } else if (choice === 'Create Empty') {
+    // Create empty course.yaml with basic structure
+    const content = `# Course Settings for ${courseInfo.name}
+# This file stores course configuration that can be synced with Canvas
+
+course_id: "${courseInfo.id}"
+name: "${courseInfo.name}"
+course_code: "${courseInfo.courseCode}"
+
+# Display settings
+# default_view: modules  # modules, syllabus, assignments, feed, wiki
+
+# Visibility
+# published: false
+# is_public: false
+
+# Dates
+# start_at: null
+# end_at: null
+# time_zone: null
+`
+
+    fs.writeFileSync(settingsPath, content)
+    courseTreeProvider.refresh()
+
+    const doc = await vscode.workspace.openTextDocument(settingsPath)
+    await vscode.window.showTextDocument(doc)
+    vscode.window.showInformationMessage('Created empty course.yaml - edit and push to update Canvas settings')
+  }
 }
 
 async function linkToCanvas(item: CourseTreeItem | undefined, context: vscode.ExtensionContext) {
