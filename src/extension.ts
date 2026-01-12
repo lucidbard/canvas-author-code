@@ -1294,11 +1294,52 @@ async function listCourses() {
 
 async function listCoursesQuiet(): Promise<Course[] | undefined> {
   try {
-    const result = await mcpClient?.callTool<ListCoursesResponse>('list_courses', {})
+    // Pass enrollment_state='all' to get all courses, not just currently active ones
+    const result = await mcpClient?.callTool<ListCoursesResponse | { error: string; error_type?: string; message?: string }>('list_courses', { enrollment_state: 'all' })
+
+    // Check if result is an error response
+    if (result && typeof result === 'object' && 'error' in result) {
+      const errorResult = result as { error: string; error_type?: string; message?: string }
+
+      // Check for authentication errors
+      if (errorResult.error_type === 'authentication' ||
+        errorResult.error.toLowerCase().includes('expired') ||
+        errorResult.error.toLowerCase().includes('invalid access token')) {
+        const action = await vscode.window.showErrorMessage(
+          errorResult.message || 'Your Canvas API token has expired. Please update your credentials.',
+          'Update Token'
+        )
+        if (action === 'Update Token') {
+          await vscode.commands.executeCommand('canvas-author.configureCanvas')
+        }
+        return undefined
+      }
+
+      console.error('Failed to list courses:', errorResult.error)
+      vscode.window.showErrorMessage(`Failed to list courses: ${errorResult.error}`)
+      return undefined
+    }
+
     // result is now directly the array of courses
-    return result
+    return result as Course[]
   } catch (error) {
     console.error('Failed to list courses:', error)
+
+    // Check if the error message indicates auth issues
+    const errorMessage = error instanceof Error ? error.message : String(error)
+    if (errorMessage.toLowerCase().includes('expired') ||
+      errorMessage.toLowerCase().includes('invalid access token') ||
+      errorMessage.toLowerCase().includes('401')) {
+      const action = await vscode.window.showErrorMessage(
+        'Your Canvas API token has expired. Please update your credentials.',
+        'Update Token'
+      )
+      if (action === 'Update Token') {
+        await vscode.commands.executeCommand('canvas-author.configureCanvas')
+      }
+    } else {
+      vscode.window.showErrorMessage(`Failed to connect to Canvas: ${errorMessage}`)
+    }
     return undefined
   }
 }
