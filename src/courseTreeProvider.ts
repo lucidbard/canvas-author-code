@@ -139,7 +139,14 @@ export class CourseTreeItem extends vscode.TreeItem {
         title: 'Open Settings',
         arguments: [this]
       }
-    } else if (this.resourcePath && (this.itemType === 'page' || this.itemType === 'quiz' || this.itemType === 'assignment' || this.itemType === 'rubric' || this.itemType === 'moduleItem')) {
+    } else if (this.itemType === 'assignment' && this.resourcePath) {
+      // Assignments use a custom command to potentially open with rubric
+      this.command = {
+        command: 'canvas-author.openAssignment',
+        title: 'Open Assignment',
+        arguments: [this]
+      }
+    } else if (this.resourcePath && (this.itemType === 'page' || this.itemType === 'quiz' || this.itemType === 'rubric' || this.itemType === 'moduleItem')) {
       this.command = {
         command: 'vscode.open',
         title: 'Open File',
@@ -170,6 +177,8 @@ export class CourseTreeProvider implements vscode.TreeDataProvider<CourseTreeIte
   private fileWatchers: Map<string, vscode.FileSystemWatcher> = new Map();
   private mcpClient: CanvasMcpClient | undefined
   private syncedCategories: Set<string> = new Set(); // Track what's been synced this session
+  private metadataCache: Map<string, any> = new Map(); // Cache for lightweight sync data
+  private syncTimer: NodeJS.Timeout | undefined
 
   constructor(private context: vscode.ExtensionContext) {
     this.registryPath = path.join(this.getStoragePath(), 'registry.json')
@@ -177,6 +186,82 @@ export class CourseTreeProvider implements vscode.TreeDataProvider<CourseTreeIte
     this.setupFileWatchers()
     // Set hasCourses context immediately from cached registry
     this.updateHasCoursesContext()
+    // Start periodic lightweight sync every 5 minutes
+    this.startPeriodicSync()
+  }
+
+  private startPeriodicSync() {
+    // Do an initial sync after 10 seconds
+    setTimeout(() => this.performLightweightSync(), 10000)
+    
+    // Then sync every 5 minutes
+    this.syncTimer = setInterval(() => {
+      this.performLightweightSync()
+    }, 5 * 60 * 1000)
+  }
+
+  private async performLightweightSync() {
+    if (!this.mcpClient || this.registry.courses.length === 0) {
+      return
+    }
+
+    console.log('Performing lightweight metadata sync...')
+    
+    for (const course of this.registry.courses) {
+      try {
+        // Sync metadata for pages, quizzes, and assignments
+        await this.syncCategoryMetadata(course, 'pages')
+        await this.syncCategoryMetadata(course, 'quizzes')
+        await this.syncCategoryMetadata(course, 'assignments')
+      } catch (error) {
+        console.error(`Lightweight sync failed for course ${course.id}:`, error)
+      }
+    }
+
+    // Refresh the tree to show updated status
+    this.refresh()
+  }
+
+  private async syncCategoryMetadata(course: CourseInfo, category: string) {
+    try {
+      let toolName = ''
+      switch (category) {
+        case 'pages':
+          toolName = 'list_pages'
+          break
+        case 'quizzes':
+          toolName = 'list_quizzes'
+          break
+        case 'assignments':
+          toolName = 'list_assignments'
+          break
+        default:
+          return
+      }
+
+      const result = await this.mcpClient?.callTool(toolName, { course_id: course.id })
+      if (result) {
+        const cacheKey = `${course.id}:${category}`
+        this.metadataCache.set(cacheKey, result)
+      }
+    } catch (error) {
+      console.error(`Failed to sync ${category} metadata:`, error)
+    }
+  }
+
+  getMetadataForItem(courseId: string, category: string, itemId: string): any {
+    const cacheKey = `${courseId}:${category}`
+    const metadata = this.metadataCache.get(cacheKey)
+    if (!metadata || !Array.isArray(metadata)) {
+      return null
+    }
+    
+    return metadata.find((item: any) => 
+      item.page_id === itemId || 
+      item.quiz_id === itemId || 
+      item.assignment_id === itemId ||
+      item.id === itemId
+    )
   }
 
   private updateHasCoursesContext() {
@@ -393,15 +478,21 @@ export class CourseTreeProvider implements vscode.TreeDataProvider<CourseTreeIte
 
     for (const file of mdFiles) {
       const fileName = path.basename(file, '.md')
+      const title = this.extractTitleFromFrontmatter(file) || fileName
       const status = await this.getFileSyncStatus(file, course)
-      items.push(new CourseTreeItem(
-        fileName,
+      const published = this.extractPublishedStatus(file)
+      const item = new CourseTreeItem(
+        title,
         vscode.TreeItemCollapsibleState.None,
         'page',
         course,
         file,
         status
-      ))
+      )
+      if (published !== null) {
+        item.description = published ? '$(check) Published' : '$(circle-slash) Unpublished'
+      }
+      items.push(item)
     }
 
     return items
@@ -416,15 +507,36 @@ export class CourseTreeProvider implements vscode.TreeDataProvider<CourseTreeIte
 
       for (const file of assignmentFiles) {
         const fileName = path.basename(file, '.md')
+        const title = this.extractTitleFromFrontmatter(file) || fileName
         const status = await this.getFileSyncStatus(file, course)
-        items.push(new CourseTreeItem(
-          fileName,
+        const published = this.extractPublishedStatus(file)
+        const assignmentId = this.extractAssignmentId(file)
+        
+        const item = new CourseTreeItem(
+          title,
           vscode.TreeItemCollapsibleState.None,
           'assignment',
           course,
           file,
           status
-        ))
+        )
+        
+        // Get submission count from metadata if available
+        let descriptionParts: string[] = []
+        if (assignmentId) {
+          const metadata = this.getMetadataForItem(course.id, 'assignments', assignmentId)
+          if (metadata && metadata.submission_count !== undefined) {
+            descriptionParts.push(`${metadata.submission_count} submissions`)
+          }
+        }
+        if (published !== null) {
+          descriptionParts.push(published ? '$(check)' : '$(circle-slash)')
+        }
+        if (descriptionParts.length > 0) {
+          item.description = descriptionParts.join(' • ')
+        }
+        
+        items.push(item)
       }
     }
 
@@ -433,22 +545,32 @@ export class CourseTreeProvider implements vscode.TreeDataProvider<CourseTreeIte
 
   private async getQuizItems(coursePath: string, course: CourseInfo): Promise<CourseTreeItem[]> {
     const items: CourseTreeItem[] = []
+    const quizzesPath = path.join(coursePath, 'quizzes')
 
-    // Look for .quiz.md files in the course root directory
-    const quizFiles = this.findFiles(coursePath, '.quiz.md', ['quizzes', 'assignments'])
+    // Look for .quiz.md files in the quizzes subfolder
+    if (fs.existsSync(quizzesPath)) {
+      const quizFiles = this.findFiles(quizzesPath, '.quiz.md')
 
-    for (const file of quizFiles) {
-      // Remove both .quiz.md extension
-      const fileName = path.basename(file, '.quiz.md')
-      const status = await this.getFileSyncStatus(file, course)
-      items.push(new CourseTreeItem(
-        fileName,
-        vscode.TreeItemCollapsibleState.None,
-        'quiz',
-        course,
-        file,
-        status
-      ))
+      for (const file of quizFiles) {
+        // Remove both .quiz.md extension
+        const fileName = path.basename(file, '.quiz.md')
+        const title = this.extractTitleFromFrontmatter(file) || fileName
+        const status = await this.getFileSyncStatus(file, course)
+        const published = this.extractPublishedStatus(file)
+        
+        const item = new CourseTreeItem(
+          title,
+          vscode.TreeItemCollapsibleState.None,
+          'quiz',
+          course,
+          file,
+          status
+        )
+        if (published !== null) {
+          item.description = published ? '$(check) Published' : '$(circle-slash) Unpublished'
+        }
+        items.push(item)
+      }
     }
 
     return items
@@ -715,26 +837,119 @@ export class CourseTreeProvider implements vscode.TreeDataProvider<CourseTreeIte
     return files
   }
 
-  private async getFileSyncStatus(filePath: string, course: CourseInfo): Promise<SyncStatus> {
-    // For now, return 'synced' as placeholder
-    // TODO: Implement actual sync status checking via MCP
+  private extractTitleFromFrontmatter(filePath: string): string | null {
     try {
       const content = fs.readFileSync(filePath, 'utf8')
-      // Check if file has page_id in frontmatter (indicates it's been synced)
-      if (content.includes('page_id:') || content.includes('quiz_id:')) {
-        // Check if modified since last sync by comparing updated_at
-        const updatedMatch = content.match(/updated_at: ['"]?([^'"\n]+)['"]?/)
-        if (updatedMatch) {
-          const canvasDate = new Date(updatedMatch[1])
-          const fileStats = fs.statSync(filePath)
-          if (fileStats.mtime > canvasDate) {
-            return 'modified'
-          }
-          return 'synced'
-        }
-        return 'synced'
+      
+      // Match YAML frontmatter between --- markers
+      const frontmatterMatch = content.match(/^---\s*\n([\s\S]*?)\n---/)
+      if (!frontmatterMatch) {
+        return null
       }
-      return 'localOnly'
+
+      const frontmatter = frontmatterMatch[1]
+      
+      // Extract title field (handles quoted and unquoted values)
+      const titleMatch = frontmatter.match(/^title:\s*(.+)$/m)
+      if (titleMatch) {
+        let title = titleMatch[1].trim()
+        // Remove quotes if present
+        title = title.replace(/^["']|["']$/g, '')
+        return title
+      }
+
+      return null
+    } catch (e) {
+      return null
+    }
+  }
+
+  private extractTitleFromYaml(filePath: string): string | null {
+    try {
+      const content = fs.readFileSync(filePath, 'utf8')
+      
+      // Extract title or name field from YAML
+      const titleMatch = content.match(/^(?:title|name):\s*(.+)$/m)
+      if (titleMatch) {
+        let title = titleMatch[1].trim()
+        // Remove quotes if present
+        title = title.replace(/^["']|["']$/g, '')
+        return title
+      }
+
+      return null
+    } catch (e) {
+      return null
+    }
+  }
+
+  private extractPublishedStatus(filePath: string): boolean | null {
+    try {
+      const content = fs.readFileSync(filePath, 'utf8')
+      const match = content.match(/published:\s*(true|false)/i)
+      if (match) {
+        return match[1].toLowerCase() === 'true'
+      }
+      return null
+    } catch (e) {
+      return null
+    }
+  }
+
+  private extractAssignmentId(filePath: string): string | null {
+    try {
+      const content = fs.readFileSync(filePath, 'utf8')
+      const match = content.match(/assignment_id:\s*['"]?(\d+)['"]?/)
+      return match ? match[1] : null
+    } catch (e) {
+      return null
+    }
+  }
+
+  private async getFileSyncStatus(filePath: string, course: CourseInfo): Promise<SyncStatus> {
+    try {
+      const content = fs.readFileSync(filePath, 'utf8')
+      
+      // Extract IDs from frontmatter
+      const pageIdMatch = content.match(/page_id:\s*['"]?(\d+)['"]?/)
+      const quizIdMatch = content.match(/quiz_id:\s*['"]?(\d+)['"]?/)
+      const assignmentIdMatch = content.match(/assignment_id:\s*['"]?(\d+)['"]?/)
+      
+      const itemId = pageIdMatch?.[1] || quizIdMatch?.[1] || assignmentIdMatch?.[1]
+      
+      if (!itemId) {
+        return 'localOnly'
+      }
+
+      // Determine category
+      let category = 'pages'
+      if (quizIdMatch) category = 'quizzes'
+      else if (assignmentIdMatch) category = 'assignments'
+
+      // Check cached metadata for published status
+      const metadata = this.getMetadataForItem(course.id, category, itemId)
+      
+      // Check if modified since last sync by comparing updated_at
+      const updatedMatch = content.match(/updated_at:\s*['"]?([^'"\n]+)['"]?/)
+      if (updatedMatch) {
+        const canvasDate = new Date(updatedMatch[1])
+        const fileStats = fs.statSync(filePath)
+        if (fileStats.mtime > canvasDate) {
+          return 'modified'
+        }
+      }
+
+      // Check if published status matches (if we have metadata)
+      if (metadata) {
+        const localPublished = content.match(/published:\s*(true|false)/)?.[1] === 'true'
+        const canvasPublished = metadata.published === true
+        
+        if (localPublished !== canvasPublished) {
+          return 'modified'
+        }
+      }
+
+      return 'synced'
     } catch (e) {
       return 'unknown'
     }
@@ -786,6 +1001,9 @@ export class CourseTreeProvider implements vscode.TreeDataProvider<CourseTreeIte
   }
 
   dispose() {
+    if (this.syncTimer) {
+      clearInterval(this.syncTimer)
+    }
     for (const watcher of this.fileWatchers.values()) {
       watcher.dispose()
     }

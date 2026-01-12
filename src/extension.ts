@@ -6,6 +6,8 @@ import { CourseTreeProvider, CourseTreeItem, CourseInfo } from './courseTreeProv
 import { OnboardingPanel } from './onboardingPanel'
 import { CoursePickerPanel, Course as PickerCourse } from './coursePickerPanel'
 import { MetadataPanel } from './metadataPanel'
+import { RubricPreviewPanel } from './rubricPreviewPanel'
+import { SubmissionsPanel } from './submissionsPanel'
 
 // Response type interfaces
 interface Course {
@@ -79,9 +81,47 @@ interface RubricStatusResponse {
   }
 }
 
+interface PullDiscussionsResponse {
+  pulled: Array<{ title: string; file: string }>
+  skipped: Array<{ title: string; reason: string }>
+  errors: Array<{ title?: string; error: string }>
+}
+
+interface PushDiscussionsResponse {
+  created: Array<{ title: string; id: string }>
+  updated: Array<{ title: string; id: string }>
+  skipped: Array<{ title: string; reason: string }>
+  errors: Array<{ title?: string; error: string }>
+}
+
+interface DiscussionStatusResponse {
+  synced: Array<{ title: string; status: string }>
+  canvas_only: Array<{ title: string }>
+  local_only: Array<{ title: string }>
+  summary: {
+    synced_count: number
+    canvas_only_count: number
+    local_only_count: number
+  }
+}
+
+interface PullAnnouncementsResponse {
+  pulled: Array<{ title: string; file: string }>
+  skipped: Array<{ title: string; reason: string }>
+  errors: Array<{ title?: string; error: string }>
+}
+
+interface PushAnnouncementsResponse {
+  created: Array<{ title: string; id: string }>
+  updated: Array<{ title: string; id: string }>
+  skipped: Array<{ title: string; reason: string }>
+  errors: Array<{ title?: string; error: string }>
+}
+
 let mcpClient: CanvasMcpClient | undefined
 let courseTreeProvider: CourseTreeProvider
 let extensionContext: vscode.ExtensionContext
+let submissionsPanel: SubmissionsPanel | undefined
 
 // Check if Canvas is configured
 async function hasCanvasToken(context: vscode.ExtensionContext): Promise<boolean> {
@@ -141,6 +181,13 @@ export async function activate(context: vscode.ExtensionContext) {
   })
   context.subscriptions.push(treeView)
 
+  // Register submissions panel
+  submissionsPanel = new SubmissionsPanel(context.extensionUri, context)
+  submissionsPanel.setMcpClient(mcpClient)
+  context.subscriptions.push(
+    vscode.window.registerWebviewViewProvider('canvasAuthorSubmissions', submissionsPanel)
+  )
+
   // Register metadata panel
   const metadataPanel = new MetadataPanel(context)
   context.subscriptions.push(
@@ -163,6 +210,12 @@ export async function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('canvas-author.pullRubrics', (item?: CourseTreeItem) => pullRubrics(item)),
     vscode.commands.registerCommand('canvas-author.pushRubrics', (item?: CourseTreeItem) => pushRubrics(item)),
     vscode.commands.registerCommand('canvas-author.rubricStatus', (item?: CourseTreeItem) => showRubricStatus(item)),
+    vscode.commands.registerCommand('canvas-author.pullDiscussions', (item?: CourseTreeItem) => pullDiscussions(item)),
+    vscode.commands.registerCommand('canvas-author.pushDiscussions', (item?: CourseTreeItem) => pushDiscussions(item)),
+    vscode.commands.registerCommand('canvas-author.discussionStatus', (item?: CourseTreeItem) => showDiscussionStatus(item)),
+    vscode.commands.registerCommand('canvas-author.pullAnnouncements', (item?: CourseTreeItem) => pullAnnouncements(item)),
+    vscode.commands.registerCommand('canvas-author.pushAnnouncements', (item?: CourseTreeItem) => pushAnnouncements(item)),
+    vscode.commands.registerCommand('canvas-author.createAnnouncement', (item?: CourseTreeItem) => createAnnouncement(item)),
 
     // Sidebar commands
     vscode.commands.registerCommand('canvas-author.addCourse', addCourse),
@@ -179,6 +232,8 @@ export async function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('canvas-author.createQuiz', (item?: CourseTreeItem) => createQuiz(item)),
     vscode.commands.registerCommand('canvas-author.linkToCanvas', (item?: CourseTreeItem) => linkToCanvas(item, context)),
     vscode.commands.registerCommand('canvas-author.openSettings', (item?: CourseTreeItem) => openSettings(item)),
+    vscode.commands.registerCommand('canvas-author.openAssignment', (item?: CourseTreeItem) => openAssignment(item, context)),
+    vscode.commands.registerCommand('canvas-author.previewRubric', () => previewRubric(context)),
 
     // Onboarding command
     vscode.commands.registerCommand('canvas-author.showOnboarding', () => OnboardingPanel.createOrShow(context))
@@ -956,6 +1011,58 @@ course_code: "${courseInfo.courseCode}"
     const doc = await vscode.workspace.openTextDocument(settingsPath)
     await vscode.window.showTextDocument(doc)
     vscode.window.showInformationMessage('Created empty course.yaml - edit and push to update Canvas settings')
+  }
+}
+
+async function openAssignment(item?: CourseTreeItem, context?: vscode.ExtensionContext) {
+  if (!item || !item.resourcePath || !item.courseInfo) {
+    return
+  }
+
+  // Open the assignment file first
+  const assignmentDoc = await vscode.workspace.openTextDocument(item.resourcePath)
+  await vscode.window.showTextDocument(assignmentDoc, { viewColumn: vscode.ViewColumn.One })
+
+  // Extract assignment_id from frontmatter to show submissions
+  const content = fs.readFileSync(item.resourcePath, 'utf8')
+  const assignmentIdMatch = content.match(/assignment_id:\s*['"]?(\d+)['"]?/)
+  
+  if (assignmentIdMatch && submissionsPanel && item.courseInfo) {
+    const assignmentId = assignmentIdMatch[1]
+    await submissionsPanel.showAssignmentSubmissions(item.courseInfo.id, assignmentId, item.label)
+  }
+
+  // Check if a rubric exists for this assignment
+  const assignmentName = path.basename(item.resourcePath, '.md')
+  const rubricsPath = path.join(item.courseInfo.localPath, 'rubrics')
+  
+  if (!fs.existsSync(rubricsPath)) {
+    return
+  }
+
+  // Look for a rubric file matching the assignment name
+  const possibleRubricPath = path.join(rubricsPath, `${assignmentName}.rubric.yaml`)
+  
+  if (fs.existsSync(possibleRubricPath) && context) {
+    // Open rubric preview alongside the assignment
+    RubricPreviewPanel.createOrShow(context.extensionUri, possibleRubricPath, item.label)
+  } else {
+    // Try to find any rubric file that references this assignment
+    const rubricFiles = fs.readdirSync(rubricsPath).filter(f => f.endsWith('.rubric.yaml'))
+    
+    for (const rubricFile of rubricFiles) {
+      const rubricPath = path.join(rubricsPath, rubricFile)
+      const content = fs.readFileSync(rubricPath, 'utf8')
+      
+      // Check if this rubric's assignment_name matches
+      const match = content.match(/assignment_name:\s*["']?([^"'\n]+)["']?/)
+      if (match && match[1] === item.label) {
+        if (context) {
+          RubricPreviewPanel.createOrShow(context.extensionUri, rubricPath, item.label)
+        }
+        break
+      }
+    }
   }
 }
 
@@ -1783,6 +1890,365 @@ async function showRubricStatus(item?: CourseTreeItem) {
   } catch (error) {
     vscode.window.showErrorMessage(`Failed to get rubric status: ${error}`)
   }
+}
+
+async function pullDiscussions(item?: CourseTreeItem) {
+  // Check Canvas connection
+  if (!await requireCanvasConnection(extensionContext, 'pull discussions from Canvas')) {
+    return
+  }
+
+  const coursePath = getCoursePath(item)
+  if (!coursePath) {
+    vscode.window.showErrorMessage('Please select a course or open a folder')
+    return
+  }
+
+  const courseId = await getCourseId(item)
+  if (!courseId) {
+    vscode.window.showErrorMessage('Could not determine course ID. Please check .canvas.json')
+    return
+  }
+
+  try {
+    const result = await vscode.window.withProgress({
+      location: vscode.ProgressLocation.Notification,
+      title: 'Pulling discussions from Canvas...',
+      cancellable: false
+    }, async () => {
+      return await mcpClient?.callTool<PullDiscussionsResponse>('pull_discussions', {
+        course_id: courseId,
+        output_dir: coursePath
+      })
+    })
+
+    const pulled = result?.pulled?.length ?? 0
+    const skipped = result?.skipped?.length ?? 0
+    const errors = result?.errors?.length ?? 0
+
+    let message = `Pulled ${pulled} discussions`
+    if (skipped > 0) {
+      message += `, ${skipped} skipped`
+    }
+    if (errors > 0) {
+      message += ` (${errors} errors)`
+      vscode.window.showWarningMessage(message)
+    } else {
+      vscode.window.showInformationMessage(message)
+    }
+    courseTreeProvider.refresh()
+  } catch (error) {
+    vscode.window.showErrorMessage(`Failed to pull discussions: ${error}`)
+  }
+}
+
+async function pushDiscussions(item?: CourseTreeItem) {
+  // Check Canvas connection
+  if (!await requireCanvasConnection(extensionContext, 'push discussions to Canvas')) {
+    return
+  }
+
+  const coursePath = getCoursePath(item)
+  if (!coursePath) {
+    vscode.window.showErrorMessage('Please select a course or open a folder')
+    return
+  }
+
+  const courseId = await getCourseId(item)
+  if (!courseId) {
+    vscode.window.showErrorMessage('Could not determine course ID. Please check .canvas.json')
+    return
+  }
+
+  try {
+    const result = await vscode.window.withProgress({
+      location: vscode.ProgressLocation.Notification,
+      title: 'Pushing discussions to Canvas...',
+      cancellable: false
+    }, async () => {
+      return await mcpClient?.callTool<PushDiscussionsResponse>('push_discussions', {
+        course_id: courseId,
+        input_dir: coursePath
+      })
+    })
+
+    const created = result?.created?.length ?? 0
+    const updated = result?.updated?.length ?? 0
+    const skipped = result?.skipped?.length ?? 0
+    const errors = result?.errors?.length ?? 0
+
+    let message = `Discussions: ${created} created, ${updated} updated`
+    if (skipped > 0) {
+      message += `, ${skipped} skipped`
+    }
+    if (errors > 0) {
+      message += ` (${errors} errors)`
+      vscode.window.showWarningMessage(message)
+    } else {
+      vscode.window.showInformationMessage(message)
+    }
+    courseTreeProvider.refresh()
+  } catch (error) {
+    vscode.window.showErrorMessage(`Failed to push discussions: ${error}`)
+  }
+}
+
+async function showDiscussionStatus(item?: CourseTreeItem) {
+  // Check Canvas connection
+  if (!await requireCanvasConnection(extensionContext, 'check discussion status with Canvas')) {
+    return
+  }
+
+  const coursePath = getCoursePath(item)
+  if (!coursePath) {
+    vscode.window.showErrorMessage('Please select a course or open a folder')
+    return
+  }
+
+  const courseId = await getCourseId(item)
+  if (!courseId) {
+    vscode.window.showErrorMessage('Could not determine course ID. Please check .canvas.json')
+    return
+  }
+
+  try {
+    const result = await mcpClient?.callTool<DiscussionStatusResponse>('discussion_sync_status', {
+      course_id: courseId,
+      local_dir: coursePath
+    })
+
+    const channel = vscode.window.createOutputChannel('Canvas Author')
+    channel.clear()
+    channel.appendLine('Canvas Discussion Sync Status')
+    channel.appendLine('=============================')
+    channel.appendLine('')
+
+    const summary = result?.summary
+    if (summary) {
+      channel.appendLine(`Synced: ${summary.synced_count}`)
+      channel.appendLine(`Canvas only: ${summary.canvas_only_count}`)
+      channel.appendLine(`Local only: ${summary.local_only_count}`)
+      channel.appendLine('')
+    }
+
+    if (result?.synced && result.synced.length > 0) {
+      channel.appendLine('Synced Discussions:')
+      for (const d of result.synced) {
+        channel.appendLine(`  + ${d.title}`)
+      }
+      channel.appendLine('')
+    }
+
+    if (result?.canvas_only && result.canvas_only.length > 0) {
+      channel.appendLine('Canvas Only (not in local):')
+      for (const d of result.canvas_only) {
+        channel.appendLine(`  > ${d.title}`)
+      }
+      channel.appendLine('')
+    }
+
+    if (result?.local_only && result.local_only.length > 0) {
+      channel.appendLine('Local Only (not in Canvas):')
+      for (const d of result.local_only) {
+        channel.appendLine(`  < ${d.title}`)
+      }
+    }
+
+    channel.show()
+  } catch (error) {
+    vscode.window.showErrorMessage(`Failed to get discussion status: ${error}`)
+  }
+}
+
+async function pullAnnouncements(item?: CourseTreeItem) {
+  // Check Canvas connection
+  if (!await requireCanvasConnection(extensionContext, 'pull announcements from Canvas')) {
+    return
+  }
+
+  const coursePath = getCoursePath(item)
+  if (!coursePath) {
+    vscode.window.showErrorMessage('Please select a course or open a folder')
+    return
+  }
+
+  const courseId = await getCourseId(item)
+  if (!courseId) {
+    vscode.window.showErrorMessage('Could not determine course ID. Please check .canvas.json')
+    return
+  }
+
+  try {
+    const result = await vscode.window.withProgress({
+      location: vscode.ProgressLocation.Notification,
+      title: 'Pulling announcements from Canvas...',
+      cancellable: false
+    }, async () => {
+      return await mcpClient?.callTool<PullAnnouncementsResponse>('pull_announcements', {
+        course_id: courseId,
+        output_dir: coursePath,
+        limit: 50
+      })
+    })
+
+    const pulled = result?.pulled?.length ?? 0
+    const skipped = result?.skipped?.length ?? 0
+    const errors = result?.errors?.length ?? 0
+
+    let message = `Pulled ${pulled} announcements`
+    if (skipped > 0) {
+      message += `, ${skipped} skipped`
+    }
+    if (errors > 0) {
+      message += ` (${errors} errors)`
+      vscode.window.showWarningMessage(message)
+    } else {
+      vscode.window.showInformationMessage(message)
+    }
+    courseTreeProvider.refresh()
+  } catch (error) {
+    vscode.window.showErrorMessage(`Failed to pull announcements: ${error}`)
+  }
+}
+
+async function pushAnnouncements(item?: CourseTreeItem) {
+  // Check Canvas connection
+  if (!await requireCanvasConnection(extensionContext, 'push announcements to Canvas')) {
+    return
+  }
+
+  const coursePath = getCoursePath(item)
+  if (!coursePath) {
+    vscode.window.showErrorMessage('Please select a course or open a folder')
+    return
+  }
+
+  const courseId = await getCourseId(item)
+  if (!courseId) {
+    vscode.window.showErrorMessage('Could not determine course ID. Please check .canvas.json')
+    return
+  }
+
+  try {
+    const result = await vscode.window.withProgress({
+      location: vscode.ProgressLocation.Notification,
+      title: 'Pushing announcements to Canvas...',
+      cancellable: false
+    }, async () => {
+      return await mcpClient?.callTool<PushAnnouncementsResponse>('push_announcements', {
+        course_id: courseId,
+        input_dir: coursePath
+      })
+    })
+
+    const created = result?.created?.length ?? 0
+    const updated = result?.updated?.length ?? 0
+    const skipped = result?.skipped?.length ?? 0
+    const errors = result?.errors?.length ?? 0
+
+    let message = `Announcements: ${created} created, ${updated} updated`
+    if (skipped > 0) {
+      message += `, ${skipped} skipped`
+    }
+    if (errors > 0) {
+      message += ` (${errors} errors)`
+      vscode.window.showWarningMessage(message)
+    } else {
+      vscode.window.showInformationMessage(message)
+    }
+    courseTreeProvider.refresh()
+  } catch (error) {
+    vscode.window.showErrorMessage(`Failed to push announcements: ${error}`)
+  }
+}
+
+async function createAnnouncement(item?: CourseTreeItem) {
+  const coursePath = getCoursePath(item)
+  if (!coursePath) {
+    vscode.window.showErrorMessage('Please select a course first')
+    return
+  }
+
+  const title = await vscode.window.showInputBox({
+    prompt: 'Enter announcement title',
+    placeHolder: 'Week 1 Overview'
+  })
+
+  if (!title) {
+    return
+  }
+
+  // Create announcements directory if it doesn't exist
+  const announcementsDir = path.join(coursePath, 'announcements')
+  if (!fs.existsSync(announcementsDir)) {
+    fs.mkdirSync(announcementsDir, { recursive: true })
+  }
+
+  // Generate filename with date prefix
+  const today = new Date().toISOString().split('T')[0]
+  const slug = title.toLowerCase().replace(/[^a-z0-9\s-]/g, '').replace(/\s+/g, '-')
+  const fileName = `${today}-${slug}.announcement.md`
+  const filePath = path.join(announcementsDir, fileName)
+
+  if (fs.existsSync(filePath)) {
+    vscode.window.showErrorMessage(`Announcement already exists: ${fileName}`)
+    return
+  }
+
+  const content = `---
+title: ${title}
+posted_at: null
+published: false
+---
+
+# ${title}
+
+Add your announcement content here.
+`
+
+  fs.writeFileSync(filePath, content)
+  courseTreeProvider.refresh()
+
+  // Open the file
+  const doc = await vscode.workspace.openTextDocument(filePath)
+  await vscode.window.showTextDocument(doc)
+
+  vscode.window.showInformationMessage(`Created announcement: ${title}`)
+}
+
+async function previewRubric(context: vscode.ExtensionContext) {
+  const activeEditor = vscode.window.activeTextEditor
+
+  if (!activeEditor) {
+    vscode.window.showErrorMessage('Please open a rubric file first')
+    return
+  }
+
+  const filePath = activeEditor.document.uri.fsPath
+
+  // Check if this is a rubric file
+  if (!filePath.endsWith('.rubric.yaml')) {
+    vscode.window.showErrorMessage('This command only works with .rubric.yaml files')
+    return
+  }
+
+  // Extract assignment name from the file
+  const fileName = path.basename(filePath, '.rubric.yaml')
+
+  // Try to read assignment_name from the file content
+  let assignmentName = fileName
+  try {
+    const content = fs.readFileSync(filePath, 'utf8')
+    const match = content.match(/assignment_name:\s*["']?([^"'\n]+)["']?/)
+    if (match) {
+      assignmentName = match[1]
+    }
+  } catch (error) {
+    console.error('Failed to read rubric file:', error)
+  }
+
+  // Show the preview
+  RubricPreviewPanel.createOrShow(context.extensionUri, filePath, assignmentName)
 }
 
 export function deactivate() {

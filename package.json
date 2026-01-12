@@ -57,6 +57,13 @@
           "contextualTitle": "Canvas Author"
         },
         {
+          "id": "canvasAuthorSubmissions",
+          "name": "Submissions",
+          "icon": "$(checklist)",
+          "contextualTitle": "Canvas Author",
+          "type": "webview"
+        },
+        {
           "id": "canvasAuthorMetadata",
           "name": "Properties",
           "icon": "$(symbol-property)",
@@ -127,9 +134,39 @@
           "group": "sync@7"
         },
         {
+          "command": "canvas-author.pullDiscussions",
+          "when": "view == canvasAuthorCourses && viewItem == course",
+          "group": "sync@8"
+        },
+        {
+          "command": "canvas-author.pushDiscussions",
+          "when": "view == canvasAuthorCourses && viewItem == course",
+          "group": "sync@9"
+        },
+        {
+          "command": "canvas-author.discussionStatus",
+          "when": "view == canvasAuthorCourses && viewItem == course",
+          "group": "sync@10"
+        },
+        {
+          "command": "canvas-author.pullAnnouncements",
+          "when": "view == canvasAuthorCourses && viewItem == course",
+          "group": "sync@11"
+        },
+        {
+          "command": "canvas-author.pushAnnouncements",
+          "when": "view == canvasAuthorCourses && viewItem == course",
+          "group": "sync@12"
+        },
+        {
           "command": "canvas-author.createPage",
           "when": "view == canvasAuthorCourses && viewItem == course",
           "group": "create@1"
+        },
+        {
+          "command": "canvas-author.createAnnouncement",
+          "when": "view == canvasAuthorCourses && viewItem == course",
+          "group": "create@3"
         },
         {
           "command": "canvas-author.createQuiz",
@@ -165,6 +202,11 @@
           "command": "canvas-author.pushRubrics",
           "when": "view == canvasAuthorCourses && viewItem == rubric",
           "group": "sync@2"
+        },
+        {
+          "command": "canvas-author.previewRubric",
+          "when": "view == canvasAuthorCourses && viewItem == rubric",
+          "group": "navigation@1"
         },
         {
           "command": "canvas-author.openSettings",
@@ -285,6 +327,35 @@
         "command": "canvas-author.showOnboarding",
         "title": "Canvas: Connect to Canvas",
         "icon": "$(plug)"
+      },
+      {
+        "command": "canvas-author.previewRubric",
+        "title": "Canvas: Preview Rubric",
+        "icon": "$(open-preview)"
+      },
+      {
+        "command": "canvas-author.pullDiscussions",
+        "title": "Canvas: Pull Discussions"
+      },
+      {
+        "command": "canvas-author.pushDiscussions",
+        "title": "Canvas: Push Discussions"
+      },
+      {
+        "command": "canvas-author.discussionStatus",
+        "title": "Canvas: Show Discussion Status"
+      },
+      {
+        "command": "canvas-author.pullAnnouncements",
+        "title": "Canvas: Pull Announcements"
+      },
+      {
+        "command": "canvas-author.pushAnnouncements",
+        "title": "Canvas: Push Announcements"
+      },
+      {
+        "command": "canvas-author.createAnnouncement",
+        "title": "Canvas: Create New Announcement"
       }
     ],
     "configuration": {
