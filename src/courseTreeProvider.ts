@@ -179,6 +179,7 @@ export class CourseTreeProvider implements vscode.TreeDataProvider<CourseTreeIte
   private syncedCategories: Set<string> = new Set(); // Track what's been synced this session
   private metadataCache: Map<string, any> = new Map(); // Cache for lightweight sync data
   private syncTimer: NodeJS.Timeout | undefined
+  private gitWorktrees: Set<string> = new Set(); // Cached git worktree paths
 
   constructor(private context: vscode.ExtensionContext) {
     this.registryPath = path.join(this.getStoragePath(), 'registry.json')
@@ -471,12 +472,24 @@ export class CourseTreeProvider implements vscode.TreeDataProvider<CourseTreeIte
 
   private async getPageItems(coursePath: string, course: CourseInfo): Promise<CourseTreeItem[]> {
     const items: CourseTreeItem[] = []
+    const seenPaths = new Set<string>()
 
-    // Find all .md files (excluding quizzes, assignments folders, and .quiz.md files)
-    const mdFiles = this.findFiles(coursePath, '.md', ['quizzes', 'assignments'])
-      .filter(f => !f.endsWith('.quiz.md'))
+    // Get git worktrees to exclude them
+    const worktreeNames = this.getGitWorktrees(coursePath)
+    const excludeDirs = ['quizzes', 'assignments', 'modules', 'rubrics', ...worktreeNames]
+
+    // Find all .md files in root course directory only (not subdirectories)
+    // Exclude quizzes, assignments, modules, rubrics folders, git worktrees, and any .quiz.md files
+    const mdFiles = this.findFiles(coursePath, '.md', excludeDirs)
+      .filter(f => !f.endsWith('.quiz.md') && path.dirname(f) === coursePath)
 
     for (const file of mdFiles) {
+      // Skip if we've already processed this file
+      if (seenPaths.has(file)) {
+        continue
+      }
+      seenPaths.add(file)
+
       const fileName = path.basename(file, '.md')
       const title = this.extractTitleFromFrontmatter(file) || fileName
       const status = await this.getFileSyncStatus(file, course)
@@ -811,6 +824,47 @@ export class CourseTreeProvider implements vscode.TreeDataProvider<CourseTreeIte
     }
 
     return modules
+  }
+
+  private getGitWorktrees(coursePath: string): string[] {
+    /**
+     * Detect git worktrees in the course directory.
+     * Git worktrees are stored as directories and should be excluded from file searches.
+     */
+    try {
+      const { execSync } = require('child_process')
+      
+      // Check if we're in a git repository
+      try {
+        execSync('git rev-parse --git-dir', { cwd: coursePath, stdio: 'pipe' })
+      } catch {
+        // Not a git repo, no worktrees to worry about
+        return []
+      }
+
+      // Get git worktrees listing
+      const output = execSync('git worktree list --porcelain', { 
+        cwd: coursePath, 
+        encoding: 'utf8' 
+      })
+      
+      const worktrees: string[] = []
+      const lines = output.split('\n').filter((l: string) => l.trim())
+      
+      for (const line of lines) {
+        // Each worktree line starts with "worktree" followed by the path
+        if (line.startsWith('worktree ')) {
+          const worktreePath = line.substring(9) // Remove "worktree " prefix
+          const worktreeName = path.basename(worktreePath)
+          worktrees.push(worktreeName)
+        }
+      }
+      
+      return worktrees
+    } catch (err) {
+      // Silently fail if git is unavailable or command fails
+      return []
+    }
   }
 
   private findFiles(dir: string, extension: string, excludeDirs: string[] = []): string[] {

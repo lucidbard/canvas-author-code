@@ -233,6 +233,8 @@ export async function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('canvas-author.linkToCanvas', (item?: CourseTreeItem) => linkToCanvas(item, context)),
     vscode.commands.registerCommand('canvas-author.openSettings', (item?: CourseTreeItem) => openSettings(item)),
     vscode.commands.registerCommand('canvas-author.openAssignment', (item?: CourseTreeItem) => openAssignment(item, context)),
+    vscode.commands.registerCommand('canvas-author.deleteAssignment', (item?: CourseTreeItem) => deleteAssignment(item)),
+    vscode.commands.registerCommand('canvas-author.deletePage', (item?: CourseTreeItem) => deletePage(item)),
     vscode.commands.registerCommand('canvas-author.previewRubric', () => previewRubric(context)),
 
     // Onboarding command
@@ -297,6 +299,22 @@ async function autoDetectCourses() {
         console.error('Failed to parse .canvas.json:', e)
       }
     }
+  }
+}
+
+async function gitCommit(filePath: string, message: string): Promise<void> {
+  try {
+    const { execSync } = require('child_process')
+    const dir = path.dirname(filePath)
+    
+    // Stage the file change (or deletion)
+    execSync(`git add "${filePath}"`, { cwd: dir })
+    
+    // Commit with the provided message
+    execSync(`git commit -m "${message.replace(/"/g, '\\"')}"`, { cwd: dir })
+  } catch (err) {
+    // Git might not be available or file not in a repo, silently fail
+    console.log('Git commit failed, continuing without version control:', err)
   }
 }
 
@@ -1063,6 +1081,106 @@ async function openAssignment(item?: CourseTreeItem, context?: vscode.ExtensionC
         break
       }
     }
+  }
+}
+
+async function deleteAssignment(item?: CourseTreeItem) {
+  if (!item || !item.resourcePath || !item.courseInfo) {
+    return
+  }
+
+  const confirmed = await vscode.window.showWarningMessage(
+    `Delete assignment "${item.label}"? This will remove it locally and from Canvas.`,
+    'Delete',
+    'Cancel'
+  )
+
+  if (confirmed !== 'Delete') {
+    return
+  }
+
+  try {
+    // Extract assignment_id from frontmatter
+    const content = fs.readFileSync(item.resourcePath, 'utf8')
+    const assignmentIdMatch = content.match(/assignment_id:\s*['"]?(\d+)['"]?/)
+    
+    // Delete from Canvas if it has an assignment_id
+    if (assignmentIdMatch && mcpClient) {
+      const assignmentId = assignmentIdMatch[1]
+      try {
+        await mcpClient.callTool('delete_assignment', {
+          course_id: item.courseInfo.id,
+          assignment_id: assignmentId
+        })
+      } catch (err) {
+        vscode.window.showWarningMessage(
+          `Assignment already deleted from Canvas or error deleting: ${err instanceof Error ? err.message : String(err)}`
+        )
+      }
+    }
+
+    // Delete local file
+    fs.unlinkSync(item.resourcePath)
+    
+    // Auto-commit the deletion
+    await gitCommit(item.resourcePath, `Delete assignment: ${item.label}`)
+
+    vscode.window.showInformationMessage(`Deleted assignment: ${item.label}`)
+    
+    // Refresh the tree
+    courseTreeProvider?.refresh()
+  } catch (err) {
+    vscode.window.showErrorMessage(`Failed to delete assignment: ${err instanceof Error ? err.message : String(err)}`)
+  }
+}
+
+async function deletePage(item?: CourseTreeItem) {
+  if (!item || !item.resourcePath || !item.courseInfo) {
+    return
+  }
+
+  const confirmed = await vscode.window.showWarningMessage(
+    `Delete page "${item.label}"? This will remove it locally and from Canvas.`,
+    'Delete',
+    'Cancel'
+  )
+
+  if (confirmed !== 'Delete') {
+    return
+  }
+
+  try {
+    // Extract page_id from frontmatter
+    const content = fs.readFileSync(item.resourcePath, 'utf8')
+    const pageIdMatch = content.match(/page_id:\s*['"]?(\d+)['"]?/)
+    
+    // Delete from Canvas if it has a page_id
+    if (pageIdMatch && mcpClient) {
+      const pageId = pageIdMatch[1]
+      try {
+        await mcpClient.callTool('delete_page', {
+          course_id: item.courseInfo.id,
+          page_id: pageId
+        })
+      } catch (err) {
+        vscode.window.showWarningMessage(
+          `Page already deleted from Canvas or error deleting: ${err instanceof Error ? err.message : String(err)}`
+        )
+      }
+    }
+
+    // Delete local file
+    fs.unlinkSync(item.resourcePath)
+    
+    // Auto-commit the deletion
+    await gitCommit(item.resourcePath, `Delete page: ${item.label}`)
+
+    vscode.window.showInformationMessage(`Deleted page: ${item.label}`)
+    
+    // Refresh the tree
+    courseTreeProvider?.refresh()
+  } catch (err) {
+    vscode.window.showErrorMessage(`Failed to delete page: ${err instanceof Error ? err.message : String(err)}`)
   }
 }
 

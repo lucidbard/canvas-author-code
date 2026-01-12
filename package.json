@@ -149,24 +149,9 @@
           "group": "sync@10"
         },
         {
-          "command": "canvas-author.pullAnnouncements",
-          "when": "view == canvasAuthorCourses && viewItem == course",
-          "group": "sync@11"
-        },
-        {
-          "command": "canvas-author.pushAnnouncements",
-          "when": "view == canvasAuthorCourses && viewItem == course",
-          "group": "sync@12"
-        },
-        {
           "command": "canvas-author.createPage",
           "when": "view == canvasAuthorCourses && viewItem == course",
           "group": "create@1"
-        },
-        {
-          "command": "canvas-author.createAnnouncement",
-          "when": "view == canvasAuthorCourses && viewItem == course",
-          "group": "create@3"
         },
         {
           "command": "canvas-author.createQuiz",
@@ -212,6 +197,16 @@
           "command": "canvas-author.openSettings",
           "when": "view == canvasAuthorCourses && viewItem == settings",
           "group": "navigation@1"
+        },
+        {
+          "command": "canvas-author.deletePage",
+          "when": "view == canvasAuthorCourses && viewItem == page",
+          "group": "z_destructive"
+        },
+        {
+          "command": "canvas-author.deleteAssignment",
+          "when": "view == canvasAuthorCourses && viewItem == assignment",
+          "group": "z_destructive"
         }
       ]
     },
@@ -319,6 +314,16 @@
         "title": "Canvas: Link to Canvas Course"
       },
       {
+        "command": "canvas-author.deletePage",
+        "title": "Delete Page (Local & Remote)",
+        "category": "Canvas Author"
+      },
+      {
+        "command": "canvas-author.deleteAssignment",
+        "title": "Delete Assignment (Local & Remote)",
+        "category": "Canvas Author"
+      },
+      {
         "command": "canvas-author.openSettings",
         "title": "Canvas: Open Course Settings",
         "icon": "$(gear)"
@@ -346,16 +351,12 @@
         "title": "Canvas: Show Discussion Status"
       },
       {
-        "command": "canvas-author.pullAnnouncements",
-        "title": "Canvas: Pull Announcements"
+        "command": "canvas-author.deletePage",
+        "title": "Canvas: Delete Page"
       },
       {
-        "command": "canvas-author.pushAnnouncements",
-        "title": "Canvas: Push Announcements"
-      },
-      {
-        "command": "canvas-author.createAnnouncement",
-        "title": "Canvas: Create New Announcement"
+        "command": "canvas-author.deleteAssignment",
+        "title": "Canvas: Delete Assignment"
       }
     ],
     "configuration": {
