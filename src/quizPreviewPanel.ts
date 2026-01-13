@@ -198,7 +198,7 @@ export class QuizPreviewPanel {
     const questions = this._currentQuiz.questions
     const newIndex = direction === 'up' ? index - 1 : index + 1
     if (newIndex < 0 || newIndex >= questions.length) return
-    
+
     [questions[index], questions[newIndex]] = [questions[newIndex], questions[index]]
     questions.forEach((q, i) => q.number = i + 1)
     await this._saveQuiz(this._currentQuiz)
@@ -231,21 +231,21 @@ export class QuizPreviewPanel {
     if (!this._currentQuiz) return
     const question = this._currentQuiz.questions[questionIndex]
     const answer = question.answers[answerIndex]
-    
+
     if (question.type === 'MC' || question.type === 'TF') {
       question.answers.forEach(a => a.correct = false)
       answer.correct = true
     } else {
       answer.correct = !answer.correct
     }
-    
+
     await this._saveQuiz(this._currentQuiz)
     this._updateHtml()
   }
 
   private _generateMarkdown(quiz: ParsedQuiz): string {
     const lines: string[] = []
-    
+
     lines.push('---')
     for (const [key, value] of Object.entries(quiz.metadata)) {
       if (value !== undefined && value !== null && value !== '') {
@@ -258,10 +258,10 @@ export class QuizPreviewPanel {
     }
     lines.push('---')
     lines.push('')
-    
+
     lines.push('# ' + (quiz.metadata.title || 'Quiz'))
     lines.push('')
-    
+
     if (quiz.instructions) {
       lines.push('## Instructions')
       lines.push('')
@@ -270,15 +270,15 @@ export class QuizPreviewPanel {
       lines.push('---')
       lines.push('')
     }
-    
+
     lines.push('## Questions')
     lines.push('')
-    
+
     for (const q of quiz.questions) {
       const pointsStr = q.points === 1 ? '(1 pt)' : '(' + q.points + ' pts)'
       lines.push('### ' + q.number + '. [' + q.type + '] ' + q.text + ' ' + pointsStr)
       lines.push('')
-      
+
       if (q.type === 'MAT') {
         for (const a of q.answers) {
           lines.push(a.letter + '. ' + a.text + ' = ' + (a.matchTarget || ''))
@@ -293,7 +293,7 @@ export class QuizPreviewPanel {
           lines.push(prefix + a.letter + '. ' + a.text)
         }
       }
-      
+
       if (q.correctFeedback) {
         lines.push('')
         lines.push('> Correct: ' + q.correctFeedback)
@@ -305,12 +305,12 @@ export class QuizPreviewPanel {
         lines.push('')
         lines.push('> ' + q.neutralFeedback)
       }
-      
+
       lines.push('')
       lines.push('---')
       lines.push('')
     }
-    
+
     return lines.join('\n')
   }
 
@@ -331,7 +331,7 @@ export class QuizPreviewPanel {
           let value: unknown = rawValue
 
           if ((rawValue.startsWith('"') && rawValue.endsWith('"')) ||
-              (rawValue.startsWith("'") && rawValue.endsWith("'"))) {
+            (rawValue.startsWith("'") && rawValue.endsWith("'"))) {
             rawValue = rawValue.slice(1, -1)
             value = rawValue
           }
@@ -376,7 +376,7 @@ export class QuizPreviewPanel {
       const text = match[3].trim()
       const points = match[4] ? parseFloat(match[4]) : 1.0
 
-      const { answers, correctFeedback, incorrectFeedback, neutralFeedback } = 
+      const { answers, correctFeedback, incorrectFeedback, neutralFeedback } =
         this._parseAnswers(questionContent, type)
 
       questions.push({
@@ -736,9 +736,9 @@ export class QuizPreviewPanel {
     <div class="header">
         <div class="header-left">
             <input type="text" class="title-input" id="quizTitle" value="${escapeHtml(String(metadata.title || 'Untitled Quiz'))}" placeholder="Quiz Title">
-            ${metadata.published 
-              ? '<span class="status-badge status-published">Published</span>' 
-              : '<span class="status-badge status-unpublished">Draft</span>'}
+            ${metadata.published
+        ? '<span class="status-badge status-published">Published</span>'
+        : '<span class="status-badge status-unpublished">Draft</span>'}
         </div>
         <div class="header-actions">
             <button class="btn btn-secondary" id="refreshBtn">Refresh</button>
@@ -918,94 +918,94 @@ export class QuizPreviewPanel {
       { value: 'NUM', label: 'Numerical' }
     ]
 
-    const typeOptionsHtml = typeOptions.map(t => 
+    const typeOptionsHtml = typeOptions.map(t =>
       '<option value="' + t.value + '" ' + (q.type === t.value ? 'selected' : '') + '>' + t.label + '</option>'
     ).join('')
 
     let answersHtml = ''
-    
+
     if (q.type === 'ESS') {
       answersHtml = '<div class="essay-notice">Essay question - students will provide a written response</div>'
     } else if (q.type === 'MAT') {
-      answersHtml = q.answers.map((a, aIdx) => 
+      answersHtml = q.answers.map((a, aIdx) =>
         '<div class="answer correct">' +
-          '<span class="answer-letter">' + a.letter + '.</span>' +
-          '<input type="text" class="answer-text-input matching-input" value="' + escapeHtml(a.text) + '" ' +
-                 'onchange="updateAnswerText(' + idx + ', ' + aIdx + ', this.value)">' +
-          '<span class="matching-arrow">→</span>' +
-          '<input type="text" class="answer-text-input matching-input" value="' + escapeHtml(a.matchTarget || '') + '" ' +
-                 'onchange="updateMatchTarget(' + idx + ', ' + aIdx + ', this.value)">' +
-          '<button class="btn btn-icon btn-secondary answer-delete" onclick="deleteAnswer(' + idx + ', ' + aIdx + ')">×</button>' +
+        '<span class="answer-letter">' + a.letter + '.</span>' +
+        '<input type="text" class="answer-text-input matching-input" value="' + escapeHtml(a.text) + '" ' +
+        'onchange="updateAnswerText(' + idx + ', ' + aIdx + ', this.value)">' +
+        '<span class="matching-arrow">→</span>' +
+        '<input type="text" class="answer-text-input matching-input" value="' + escapeHtml(a.matchTarget || '') + '" ' +
+        'onchange="updateMatchTarget(' + idx + ', ' + aIdx + ', this.value)">' +
+        '<button class="btn btn-icon btn-secondary answer-delete" onclick="deleteAnswer(' + idx + ', ' + aIdx + ')">×</button>' +
         '</div>'
       ).join('')
     } else if (q.type === 'SA' || q.type === 'FIB' || q.type === 'NUM') {
       answersHtml = '<div style="color: var(--vscode-descriptionForeground); margin-bottom: 8px; font-size: 12px;">Accepted answers (all are correct):</div>' +
-        q.answers.map((a, aIdx) => 
+        q.answers.map((a, aIdx) =>
           '<div class="answer correct">' +
-            '<span class="answer-correct-btn checked">✓</span>' +
-            '<input type="text" class="answer-text-input" value="' + escapeHtml(a.text) + '" ' +
-                   'onchange="updateAnswerText(' + idx + ', ' + aIdx + ', this.value)">' +
-            '<button class="btn btn-icon btn-secondary answer-delete" onclick="deleteAnswer(' + idx + ', ' + aIdx + ')">×</button>' +
+          '<span class="answer-correct-btn checked">✓</span>' +
+          '<input type="text" class="answer-text-input" value="' + escapeHtml(a.text) + '" ' +
+          'onchange="updateAnswerText(' + idx + ', ' + aIdx + ', this.value)">' +
+          '<button class="btn btn-icon btn-secondary answer-delete" onclick="deleteAnswer(' + idx + ', ' + aIdx + ')">×</button>' +
           '</div>'
         ).join('')
     } else {
-      answersHtml = q.answers.map((a, aIdx) => 
+      answersHtml = q.answers.map((a, aIdx) =>
         '<div class="answer ' + (a.correct ? 'correct' : '') + '">' +
-          '<button class="answer-correct-btn ' + (a.correct ? 'checked' : '') + '" onclick="toggleCorrect(' + idx + ', ' + aIdx + ')">' +
-            (a.correct ? '✓' : '') +
-          '</button>' +
-          '<span class="answer-letter">' + a.letter + '.</span>' +
-          '<input type="text" class="answer-text-input" value="' + escapeHtml(a.text) + '" ' +
-                 'onchange="updateAnswerText(' + idx + ', ' + aIdx + ', this.value)">' +
-          '<button class="btn btn-icon btn-secondary answer-delete" onclick="deleteAnswer(' + idx + ', ' + aIdx + ')">×</button>' +
+        '<button class="answer-correct-btn ' + (a.correct ? 'checked' : '') + '" onclick="toggleCorrect(' + idx + ', ' + aIdx + ')">' +
+        (a.correct ? '✓' : '') +
+        '</button>' +
+        '<span class="answer-letter">' + a.letter + '.</span>' +
+        '<input type="text" class="answer-text-input" value="' + escapeHtml(a.text) + '" ' +
+        'onchange="updateAnswerText(' + idx + ', ' + aIdx + ', this.value)">' +
+        '<button class="btn btn-icon btn-secondary answer-delete" onclick="deleteAnswer(' + idx + ', ' + aIdx + ')">×</button>' +
         '</div>'
       ).join('')
     }
 
-    const feedbackHtml = 
+    const feedbackHtml =
       '<div class="feedback-section">' +
-        '<div class="feedback-field">' +
-          '<div class="feedback-label">✓ Correct Feedback</div>' +
-          '<input type="text" class="feedback-input" value="' + escapeHtml(q.correctFeedback || '') + '" ' +
-                 'onchange="updateFeedback(' + idx + ', \'correctFeedback\', this.value)" placeholder="Shown when answer is correct">' +
-        '</div>' +
-        '<div class="feedback-field">' +
-          '<div class="feedback-label">✕ Incorrect Feedback</div>' +
-          '<input type="text" class="feedback-input" value="' + escapeHtml(q.incorrectFeedback || '') + '" ' +
-                 'onchange="updateFeedback(' + idx + ', \'incorrectFeedback\', this.value)" placeholder="Shown when answer is incorrect">' +
-        '</div>' +
-        '<div class="feedback-field">' +
-          '<div class="feedback-label">General Feedback</div>' +
-          '<input type="text" class="feedback-input" value="' + escapeHtml(q.neutralFeedback || '') + '" ' +
-                 'onchange="updateFeedback(' + idx + ', \'neutralFeedback\', this.value)" placeholder="Always shown after answering">' +
-        '</div>' +
+      '<div class="feedback-field">' +
+      '<div class="feedback-label">✓ Correct Feedback</div>' +
+      '<input type="text" class="feedback-input" value="' + escapeHtml(q.correctFeedback || '') + '" ' +
+      'onchange="updateFeedback(' + idx + ', \'correctFeedback\', this.value)" placeholder="Shown when answer is correct">' +
+      '</div>' +
+      '<div class="feedback-field">' +
+      '<div class="feedback-label">✕ Incorrect Feedback</div>' +
+      '<input type="text" class="feedback-input" value="' + escapeHtml(q.incorrectFeedback || '') + '" ' +
+      'onchange="updateFeedback(' + idx + ', \'incorrectFeedback\', this.value)" placeholder="Shown when answer is incorrect">' +
+      '</div>' +
+      '<div class="feedback-field">' +
+      '<div class="feedback-label">General Feedback</div>' +
+      '<input type="text" class="feedback-input" value="' + escapeHtml(q.neutralFeedback || '') + '" ' +
+      'onchange="updateFeedback(' + idx + ', \'neutralFeedback\', this.value)" placeholder="Always shown after answering">' +
+      '</div>' +
       '</div>'
 
     const questionDataEscaped = escapeHtml(JSON.stringify(q))
 
     return '<div class="question" data-question-index="' + idx + '" data-question="' + questionDataEscaped + '">' +
-        '<div class="question-header">' +
-          '<span class="question-number">' + q.number + '</span>' +
-          '<select class="question-type-select" onchange="updateQuestionType(' + idx + ', this.value)">' +
-            typeOptionsHtml +
-          '</select>' +
-          '<div class="question-points">' +
-            '<input type="number" class="meta-input points-input" value="' + q.points + '" step="0.5" min="0" ' +
-                   'onchange="updateQuestionPoints(' + idx + ', this.value)">' +
-            '<span>pts</span>' +
-          '</div>' +
-          '<div class="question-actions">' +
-            '<button class="btn btn-icon btn-secondary" onclick="moveQuestion(' + idx + ', \'up\')" title="Move up">↑</button>' +
-            '<button class="btn btn-icon btn-secondary" onclick="moveQuestion(' + idx + ', \'down\')" title="Move down">↓</button>' +
-            '<button class="btn btn-icon btn-secondary" onclick="deleteQuestion(' + idx + ')" title="Delete">🗑</button>' +
-          '</div>' +
-        '</div>' +
-        '<textarea class="question-text-input" onchange="updateQuestionText(' + idx + ', this.value)">' + escapeHtml(q.text) + '</textarea>' +
-        '<div class="answers">' +
-          answersHtml +
-        '</div>' +
-        (q.type !== 'ESS' ? '<button class="btn btn-secondary btn-sm add-answer-btn" onclick="addAnswer(' + idx + ')">+ Add Answer</button>' : '') +
-        feedbackHtml +
+      '<div class="question-header">' +
+      '<span class="question-number">' + q.number + '</span>' +
+      '<select class="question-type-select" onchange="updateQuestionType(' + idx + ', this.value)">' +
+      typeOptionsHtml +
+      '</select>' +
+      '<div class="question-points">' +
+      '<input type="number" class="meta-input points-input" value="' + q.points + '" step="0.5" min="0" ' +
+      'onchange="updateQuestionPoints(' + idx + ', this.value)">' +
+      '<span>pts</span>' +
+      '</div>' +
+      '<div class="question-actions">' +
+      '<button class="btn btn-icon btn-secondary" onclick="moveQuestion(' + idx + ', \'up\')" title="Move up">↑</button>' +
+      '<button class="btn btn-icon btn-secondary" onclick="moveQuestion(' + idx + ', \'down\')" title="Move down">↓</button>' +
+      '<button class="btn btn-icon btn-secondary" onclick="deleteQuestion(' + idx + ')" title="Delete">🗑</button>' +
+      '</div>' +
+      '</div>' +
+      '<textarea class="question-text-input" onchange="updateQuestionText(' + idx + ', this.value)">' + escapeHtml(q.text) + '</textarea>' +
+      '<div class="answers">' +
+      answersHtml +
+      '</div>' +
+      (q.type !== 'ESS' ? '<button class="btn btn-secondary btn-sm add-answer-btn" onclick="addAnswer(' + idx + ')">+ Add Answer</button>' : '') +
+      feedbackHtml +
       '</div>'
   }
 

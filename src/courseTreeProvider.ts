@@ -201,7 +201,7 @@ export class CourseTreeProvider implements vscode.TreeDataProvider<CourseTreeIte
   private startPeriodicSync() {
     // Do an initial sync after 10 seconds
     setTimeout(() => this.performLightweightSync(), 10000)
-    
+
     // Then sync every 5 minutes
     this.syncTimer = setInterval(() => {
       this.performLightweightSync()
@@ -214,7 +214,7 @@ export class CourseTreeProvider implements vscode.TreeDataProvider<CourseTreeIte
     }
 
     console.log('Performing lightweight metadata sync...')
-    
+
     for (const course of this.registry.courses) {
       try {
         // Sync metadata for pages, quizzes, and assignments
@@ -263,10 +263,10 @@ export class CourseTreeProvider implements vscode.TreeDataProvider<CourseTreeIte
     if (!metadata || !Array.isArray(metadata)) {
       return null
     }
-    
-    return metadata.find((item: any) => 
-      item.page_id === itemId || 
-      item.quiz_id === itemId || 
+
+    return metadata.find((item: any) =>
+      item.page_id === itemId ||
+      item.quiz_id === itemId ||
       item.assignment_id === itemId ||
       item.id === itemId
     )
@@ -531,7 +531,7 @@ export class CourseTreeProvider implements vscode.TreeDataProvider<CourseTreeIte
         const status = await this.getFileSyncStatus(file, course)
         const published = this.extractPublishedStatus(file)
         const assignmentId = this.extractAssignmentId(file)
-        
+
         const item = new CourseTreeItem(
           title,
           vscode.TreeItemCollapsibleState.None,
@@ -540,7 +540,7 @@ export class CourseTreeProvider implements vscode.TreeDataProvider<CourseTreeIte
           file,
           status
         )
-        
+
         // Get submission count from metadata if available
         let descriptionParts: string[] = []
         if (assignmentId) {
@@ -555,7 +555,7 @@ export class CourseTreeProvider implements vscode.TreeDataProvider<CourseTreeIte
         if (descriptionParts.length > 0) {
           item.description = descriptionParts.join(' • ')
         }
-        
+
         items.push(item)
       }
     }
@@ -577,7 +577,7 @@ export class CourseTreeProvider implements vscode.TreeDataProvider<CourseTreeIte
         const title = this.extractTitleFromFrontmatter(file) || fileName
         const status = await this.getFileSyncStatus(file, course)
         const published = this.extractPublishedStatus(file)
-        
+
         const item = new CourseTreeItem(
           title,
           vscode.TreeItemCollapsibleState.None,
@@ -786,7 +786,7 @@ export class CourseTreeProvider implements vscode.TreeDataProvider<CourseTreeIte
         inModulesList = true
         continue
       }
-      
+
       // Module start - handle both root level (- name:) and nested under modules: (  - name:)
       const moduleMatch = line.match(/^-\s*name:\s*(.+)$/) || line.match(/^\s+-\s*name:\s*(.+)$/)
       if (moduleMatch) {
@@ -801,21 +801,21 @@ export class CourseTreeProvider implements vscode.TreeDataProvider<CourseTreeIte
         inItems = false
         continue
       }
-      
+
       // Published field
       const publishedMatch = line.match(/^\s+published:\s*(true|false)\s*$/)
       if (publishedMatch && currentModule) {
         currentModule.published = publishedMatch[1] === 'true'
         continue
       }
-      
+
       // Items start
       if (line.match(/^\s+items:\s*$/) && currentModule) {
         inItems = true
         currentModule.items = []
         continue
       }
-      
+
       // Item start - type field
       const typeMatch = line.match(/^\s+-\s*type:\s*(.+)$/)
       if (typeMatch && currentModule && inItems) {
@@ -825,7 +825,7 @@ export class CourseTreeProvider implements vscode.TreeDataProvider<CourseTreeIte
         currentItem = { type: typeMatch[1].trim() }
         continue
       }
-      
+
       // Item properties
       if (currentItem && inItems) {
         const pageUrlMatch = line.match(/^\s+page_url:\s*(.+)$/)
@@ -858,7 +858,7 @@ export class CourseTreeProvider implements vscode.TreeDataProvider<CourseTreeIte
      */
     try {
       const { execSync } = require('child_process')
-      
+
       // Check if we're in a git repository
       try {
         execSync('git rev-parse --git-dir', { cwd: coursePath, stdio: 'pipe' })
@@ -868,14 +868,14 @@ export class CourseTreeProvider implements vscode.TreeDataProvider<CourseTreeIte
       }
 
       // Get git worktrees listing
-      const output = execSync('git worktree list --porcelain', { 
-        cwd: coursePath, 
-        encoding: 'utf8' 
+      const output = execSync('git worktree list --porcelain', {
+        cwd: coursePath,
+        encoding: 'utf8'
       })
-      
+
       const worktrees: string[] = []
       const lines = output.split('\n').filter((l: string) => l.trim())
-      
+
       for (const line of lines) {
         // Each worktree line starts with "worktree" followed by the path
         if (line.startsWith('worktree ')) {
@@ -884,7 +884,7 @@ export class CourseTreeProvider implements vscode.TreeDataProvider<CourseTreeIte
           worktrees.push(worktreeName)
         }
       }
-      
+
       return worktrees
     } catch (err) {
       // Silently fail if git is unavailable or command fails
@@ -919,7 +919,7 @@ export class CourseTreeProvider implements vscode.TreeDataProvider<CourseTreeIte
   private extractTitleFromFrontmatter(filePath: string): string | null {
     try {
       const content = fs.readFileSync(filePath, 'utf8')
-      
+
       // Match YAML frontmatter between --- markers
       const frontmatterMatch = content.match(/^---\s*\n([\s\S]*?)\n---/)
       if (!frontmatterMatch) {
@@ -927,7 +927,7 @@ export class CourseTreeProvider implements vscode.TreeDataProvider<CourseTreeIte
       }
 
       const frontmatter = frontmatterMatch[1]
-      
+
       // Extract title field (handles quoted and unquoted values)
       const titleMatch = frontmatter.match(/^title:\s*(.+)$/m)
       if (titleMatch) {
@@ -946,7 +946,7 @@ export class CourseTreeProvider implements vscode.TreeDataProvider<CourseTreeIte
   private extractTitleFromYaml(filePath: string): string | null {
     try {
       const content = fs.readFileSync(filePath, 'utf8')
-      
+
       // Extract title or name field from YAML
       const titleMatch = content.match(/^(?:title|name):\s*(.+)$/m)
       if (titleMatch) {
@@ -988,14 +988,14 @@ export class CourseTreeProvider implements vscode.TreeDataProvider<CourseTreeIte
   private async getFileSyncStatus(filePath: string, course: CourseInfo): Promise<SyncStatus> {
     try {
       const content = fs.readFileSync(filePath, 'utf8')
-      
+
       // Extract IDs from frontmatter
       const pageIdMatch = content.match(/page_id:\s*['"]?(\d+)['"]?/)
       const quizIdMatch = content.match(/quiz_id:\s*['"]?(\d+)['"]?/)
       const assignmentIdMatch = content.match(/assignment_id:\s*['"]?(\d+)['"]?/)
-      
+
       const itemId = pageIdMatch?.[1] || quizIdMatch?.[1] || assignmentIdMatch?.[1]
-      
+
       if (!itemId) {
         return 'localOnly'
       }
@@ -1007,7 +1007,7 @@ export class CourseTreeProvider implements vscode.TreeDataProvider<CourseTreeIte
 
       // Check cached metadata for published status
       const metadata = this.getMetadataForItem(course.id, category, itemId)
-      
+
       // Check if modified since last sync by comparing updated_at
       const updatedMatch = content.match(/updated_at:\s*['"]?([^'"\n]+)['"]?/)
       if (updatedMatch) {
@@ -1022,7 +1022,7 @@ export class CourseTreeProvider implements vscode.TreeDataProvider<CourseTreeIte
       if (metadata) {
         const localPublished = content.match(/published:\s*(true|false)/)?.[1] === 'true'
         const canvasPublished = metadata.published === true
-        
+
         if (localPublished !== canvasPublished) {
           return 'modified'
         }

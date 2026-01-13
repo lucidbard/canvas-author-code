@@ -176,7 +176,7 @@ export class CourseSettingsPanel {
 
         // Remove quotes if present
         if ((rawValue.startsWith('"') && rawValue.endsWith('"')) ||
-            (rawValue.startsWith("'") && rawValue.endsWith("'"))) {
+          (rawValue.startsWith("'") && rawValue.endsWith("'"))) {
           rawValue = rawValue.slice(1, -1)
           value = rawValue
         }
@@ -209,7 +209,7 @@ export class CourseSettingsPanel {
 
         // Remove quotes if present
         if ((rawValue.startsWith('"') && rawValue.endsWith('"')) ||
-            (rawValue.startsWith("'") && rawValue.endsWith("'"))) {
+          (rawValue.startsWith("'") && rawValue.endsWith("'"))) {
           rawValue = rawValue.slice(1, -1)
           value = rawValue
         }
@@ -233,7 +233,7 @@ export class CourseSettingsPanel {
 
   private async _saveSettings(settings: CourseSettings) {
     const settingsPath = path.join(this._coursePath, 'course.yaml')
-    
+
     // Check if the existing file uses nested structure
     let useNestedStructure = false
     let existingContent = ''
@@ -250,7 +250,7 @@ export class CourseSettingsPanel {
     }
 
     fs.writeFileSync(settingsPath, content)
-    
+
     vscode.window.showInformationMessage('Course settings saved!')
     this._updateHtml()
   }
@@ -268,7 +268,7 @@ export class CourseSettingsPanel {
         currentSection = sectionMatch[1]
         inSettings = currentSection === 'settings'
         lines.push(line)
-        
+
         // If entering settings section, write all our settings
         if (inSettings) {
           const fieldDefs = this._getFieldDefinitions()
@@ -321,7 +321,7 @@ export class CourseSettingsPanel {
       if (sectionFields.length === 0) continue
 
       lines.push('# ' + sectionLabels[section])
-      
+
       for (const field of sectionFields) {
         const value = settings[field.key]
         if (value !== undefined && value !== null && value !== '') {
@@ -334,7 +334,7 @@ export class CourseSettingsPanel {
     // Add any custom fields not in our definitions
     const knownKeys = new Set(sections.map(f => f.key))
     const customEntries = Object.entries(settings).filter(([key]) => !knownKeys.has(key))
-    
+
     if (customEntries.length > 0) {
       lines.push('# Custom Settings')
       for (const [key, value] of customEntries) {
@@ -408,7 +408,7 @@ export class CourseSettingsPanel {
   private _getHtml(settings: CourseSettings): string {
     const nonce = getNonce()
     const fields = this._getFieldDefinitions()
-    
+
     const sectionOrder: Array<FieldDefinition['section']> = ['general', 'visibility', 'dates', 'students', 'other']
     const sectionLabels: Record<string, string> = {
       general: '📋 General',
@@ -421,7 +421,7 @@ export class CourseSettingsPanel {
     const sectionsHtml = sectionOrder.map(section => {
       const sectionFields = fields.filter(f => f.section === section)
       const fieldsHtml = sectionFields.map(field => this._renderField(field, settings)).join('')
-      
+
       return `
         <div class="section">
           <div class="section-header">${sectionLabels[section]}</div>
