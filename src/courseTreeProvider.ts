@@ -485,10 +485,20 @@ export class CourseTreeProvider implements vscode.TreeDataProvider<CourseTreeIte
     const worktreeNames = this.getGitWorktrees(coursePath)
     const excludeDirs = ['quizzes', 'assignments', 'modules', 'rubrics', ...worktreeNames]
 
-    // Find all .md files in root course directory only (not subdirectories)
-    // Exclude quizzes, assignments, modules, rubrics folders, git worktrees, and any .quiz.md files
-    const mdFiles = this.findFiles(coursePath, '.md', excludeDirs)
-      .filter(f => !f.endsWith('.quiz.md') && path.dirname(f) === coursePath)
+    // Check if there's a pages subdirectory
+    const pagesDir = path.join(coursePath, 'pages')
+    let mdFiles: string[] = []
+
+    if (fs.existsSync(pagesDir)) {
+      // If pages/ subdirectory exists, use files from there
+      mdFiles = this.findFiles(pagesDir, '.md', [])
+        .filter(f => !f.endsWith('.quiz.md'))
+    } else {
+      // Otherwise, find .md files in root course directory only (not subdirectories)
+      // Exclude quizzes, assignments, modules, rubrics folders, git worktrees, and any .quiz.md files
+      mdFiles = this.findFiles(coursePath, '.md', excludeDirs)
+        .filter(f => !f.endsWith('.quiz.md') && path.dirname(f) === coursePath)
+    }
 
     for (const file of mdFiles) {
       // Skip if we've already processed this file
