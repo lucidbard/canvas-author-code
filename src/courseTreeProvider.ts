@@ -92,7 +92,8 @@ export class CourseTreeItem extends vscode.TreeItem {
         if (this.description === 'page') this.iconPath = ICONS.page
         else if (this.description === 'assignment') this.iconPath = ICONS.assignment
         else if (this.description === 'quiz') this.iconPath = ICONS.quiz
-        else if (this.description === 'external_url') this.iconPath = new vscode.ThemeIcon('link-external')
+        else if (this.description === 'discussion') this.iconPath = new vscode.ThemeIcon('comment-discussion')
+        else if (this.description === 'external_url' || this.description === 'externalurl') this.iconPath = new vscode.ThemeIcon('link-external')
         else if (this.description === 'subheader') this.iconPath = new vscode.ThemeIcon('symbol-namespace')
         else this.iconPath = new vscode.ThemeIcon('circle-outline')
         break
@@ -153,7 +154,29 @@ export class CourseTreeItem extends vscode.TreeItem {
         title: 'Preview Quiz',
         arguments: [this]
       }
-    } else if (this.resourcePath && (this.itemType === 'page' || this.itemType === 'rubric' || this.itemType === 'moduleItem')) {
+    } else if (this.resourcePath && this.itemType === 'page') {
+      // Open pages in markdown preview mode
+      this.command = {
+        command: 'markdown.showPreview',
+        title: 'Open Preview',
+        arguments: [vscode.Uri.file(this.resourcePath)]
+      }
+    } else if (this.resourcePath && this.itemType === 'moduleItem') {
+      // Module items that are pages should also open in preview
+      if (this.description === 'page') {
+        this.command = {
+          command: 'markdown.showPreview',
+          title: 'Open Preview',
+          arguments: [vscode.Uri.file(this.resourcePath)]
+        }
+      } else {
+        this.command = {
+          command: 'vscode.open',
+          title: 'Open File',
+          arguments: [vscode.Uri.file(this.resourcePath)]
+        }
+      }
+    } else if (this.resourcePath && this.itemType === 'rubric') {
       this.command = {
         command: 'vscode.open',
         title: 'Open File',
@@ -749,9 +772,14 @@ export class CourseTreeProvider implements vscode.TreeDataProvider<CourseTreeIte
           // Find the local file path if it's a page
           let resourcePath: string | undefined
           if (itemType === 'page' && item.page_url) {
-            const pagePath = path.join(course.localPath, `${item.page_url}.md`)
-            if (fs.existsSync(pagePath)) {
-              resourcePath = pagePath
+            // Check pages/ subdirectory first, then fall back to root
+            const pagesSubdirPath = path.join(course.localPath, 'pages', `${item.page_url}.md`)
+            const rootPath = path.join(course.localPath, `${item.page_url}.md`)
+
+            if (fs.existsSync(pagesSubdirPath)) {
+              resourcePath = pagesSubdirPath
+            } else if (fs.existsSync(rootPath)) {
+              resourcePath = rootPath
             }
           }
 
@@ -835,7 +863,8 @@ export class CourseTreeProvider implements vscode.TreeDataProvider<CourseTreeIte
         if (currentItem) {
           currentModule.items!.push(currentItem)
         }
-        currentItem = { type: typeMatch[1].trim() }
+        // Normalize type to lowercase for consistency
+        currentItem = { type: typeMatch[1].trim().toLowerCase() }
         continue
       }
 
