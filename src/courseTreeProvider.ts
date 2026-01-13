@@ -797,7 +797,10 @@ export class CourseTreeProvider implements vscode.TreeDataProvider<CourseTreeIte
         if (currentModule) {
           modules.push(currentModule)
         }
-        currentModule = { name: moduleMatch[1].trim(), items: [] }
+        let moduleName = moduleMatch[1].trim()
+        // Remove surrounding quotes if present
+        moduleName = moduleName.replace(/^["']|["']$/g, '')
+        currentModule = { name: moduleName, items: [] }
         inItems = false
         continue
       }
@@ -829,14 +832,22 @@ export class CourseTreeProvider implements vscode.TreeDataProvider<CourseTreeIte
       // Item properties
       if (currentItem && inItems) {
         const pageUrlMatch = line.match(/^\s+page_url:\s*(.+)$/)
-        const titleMatch = line.match(/^\s+title:\s*['"]?(.+?)['"]?\s*$/)
+        const titleMatch = line.match(/^\s+title:\s*(.+)$/)
         const urlMatch = line.match(/^\s+url:\s*(.+)$/)
-        const contentIdMatch = line.match(/^\s+content_id:\s*['"]?(.+?)['"]?\s*$/)
+        const contentIdMatch = line.match(/^\s+content_id:\s*(.+)$/)
 
-        if (pageUrlMatch) currentItem.page_url = pageUrlMatch[1].trim()
-        if (titleMatch) currentItem.title = titleMatch[1].trim()
-        if (urlMatch) currentItem.url = urlMatch[1].trim()
-        if (contentIdMatch) currentItem.content_id = contentIdMatch[1].trim()
+        if (pageUrlMatch) {
+          currentItem.page_url = pageUrlMatch[1].trim().replace(/^["']|["']$/g, '')
+        }
+        if (titleMatch) {
+          currentItem.title = titleMatch[1].trim().replace(/^["']|["']$/g, '')
+        }
+        if (urlMatch) {
+          currentItem.url = urlMatch[1].trim().replace(/^["']|["']$/g, '')
+        }
+        if (contentIdMatch) {
+          currentItem.content_id = contentIdMatch[1].trim().replace(/^["']|["']$/g, '')
+        }
       }
     }
 
