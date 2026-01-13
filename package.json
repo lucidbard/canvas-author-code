@@ -212,6 +212,16 @@
           "command": "canvas-author.deleteAssignment",
           "when": "view == canvasAuthorCourses && viewItem == assignment",
           "group": "z_destructive"
+        },
+        {
+          "command": "canvas-author.renameSubheader",
+          "when": "view == canvasAuthorCourses && viewItem == moduleItem.subheader",
+          "group": "inline@1"
+        },
+        {
+          "command": "canvas-author.editModules",
+          "when": "view == canvasAuthorCourses && viewItem == category",
+          "group": "navigation@1"
         }
       ]
     },
@@ -367,6 +377,26 @@
       {
         "command": "canvas-author.deleteAssignment",
         "title": "Canvas: Delete Assignment"
+      },
+      {
+        "command": "canvas-author.renameSubheader",
+        "title": "Rename Subheader",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "canvas-author.editModules",
+        "title": "Edit Modules",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "canvas-author.approveAndMergeWorktree",
+        "title": "Canvas: Approve & Merge Worktree",
+        "icon": "$(git-merge)"
+      },
+      {
+        "command": "canvas-author.importWorktreesFromFolder",
+        "title": "Canvas: Import Worktrees from Folder",
+        "icon": "$(folder-opened)"
       }
     ],
     "configuration": {
@@ -399,6 +429,7 @@
     "test": "node ./out/test/runTest.js"
   },
   "devDependencies": {
+    "@types/js-yaml": "^4.0.9",
     "@types/mocha": "^10.0.6",
     "@types/node": "^20.10.0",
     "@types/vscode": "^1.85.0",
@@ -410,6 +441,7 @@
     "typescript": "^5.3.0"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.52.0"
+    "@anthropic-ai/sdk": "^0.52.0",
+    "js-yaml": "^4.1.1"
   }
 }

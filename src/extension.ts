@@ -10,6 +10,7 @@ import { RubricPreviewPanel } from './rubricPreviewPanel'
 import { SubmissionsPanel } from './submissionsPanel'
 import { CourseSettingsPanel } from './courseSettingsPanel'
 import { QuizPreviewPanel } from './quizPreviewPanel'
+import { ModuleEditorPanel } from './moduleEditorPanel'
 
 // Response type interfaces
 interface Course {
@@ -239,6 +240,10 @@ export async function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('canvas-author.deletePage', (item?: CourseTreeItem) => deletePage(item)),
     vscode.commands.registerCommand('canvas-author.previewRubric', () => previewRubric(context)),
     vscode.commands.registerCommand('canvas-author.previewQuiz', (item?: CourseTreeItem) => previewQuiz(item, context)),
+    vscode.commands.registerCommand('canvas-author.renameSubheader', (item?: CourseTreeItem) => renameSubheader(item)),
+    vscode.commands.registerCommand('canvas-author.editModules', (item?: CourseTreeItem) => editModules(item, context)),
+    vscode.commands.registerCommand('canvas-author.approveAndMergeWorktree', (item?: CourseTreeItem) => approveAndMergeWorktree(item)),
+    vscode.commands.registerCommand('canvas-author.importWorktreesFromFolder', () => importWorktreesFromFolder()),
 
     // Onboarding command
     vscode.commands.registerCommand('canvas-author.showOnboarding', () => OnboardingPanel.createOrShow(context))
@@ -2412,7 +2417,320 @@ async function previewRubric(context: vscode.ExtensionContext) {
   RubricPreviewPanel.createOrShow(context.extensionUri, filePath, assignmentName)
 }
 
-export function deactivate() {
-  mcpClient?.dispose()
-  courseTreeProvider?.dispose()
+async function renameSubheader(item?: CourseTreeItem) {
+  if (!item || !item.courseInfo || !item.moduleName || !item.isSubheader) {
+    vscode.window.showErrorMessage('Invalid subheader item')
+    return
+  }
+
+  const newTitle = await vscode.window.showInputBox({
+    prompt: 'Enter new title for subheader',
+    value: item.label,
+    validateInput: (value) => {
+      if (!value || value.trim().length === 0) {
+        return 'Title cannot be empty'
+      }
+      return null
+    }
+  })
+
+  if (!newTitle || newTitle === item.label) {
+    return
+  }
+
+  const modulesPath = path.join(item.courseInfo.localPath, 'modules.yaml')
+  if (!fs.existsSync(modulesPath)) {
+    vscode.window.showErrorMessage('modules.yaml not found')
+    return
+  }
+
+  try {
+    const content = fs.readFileSync(modulesPath, 'utf8')
+    const lines = content.split('\n')
+    let inTargetModule = false
+    let foundItem = false
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i]
+      
+      // Check if we're entering the target module
+      if (line.match(/^\s*-\s*name:\s*/)) {
+        const moduleName = line.replace(/^\s*-\s*name:\s*['"]?/, '').replace(/['"]?\s*$/, '')
+        inTargetModule = moduleName === item.moduleName
+      }
+
+      // If in the target module and found a subheader with the old title
+      if (inTargetModule && line.match(/^\s*-\s*title:\s*/)) {
+        const currentTitle = line.replace(/^\s*-\s*title:\s*/, '').trim()
+        if (currentTitle === item.label || currentTitle === `"${item.label}"` || currentTitle === `'${item.label}'`) {
+          // Check if next line is type: SubHeader or type: subheader
+          if (i + 1 < lines.length) {
+            const nextLine = lines[i + 1]
+            if (nextLine.match(/^\s*type:\s*(SubHeader|subheader)/i)) {
+              // Update the title
+              const indent = line.match(/^\s*/)?.[0] || '  '
+              lines[i] = `${indent}- title: ${newTitle}`
+              foundItem = true
+              break
+            }
+          }
+        }
+      }
+    }
+
+    if (foundItem) {
+      fs.writeFileSync(modulesPath, lines.join('\n'))
+      vscode.window.showInformationMessage(`Subheader renamed to "${newTitle}"`)
+      courseTreeProvider.refresh()
+    } else {
+      vscode.window.showWarningMessage('Could not find subheader in modules.yaml')
+    }
+  } catch (error) {
+    vscode.window.showErrorMessage(`Failed to rename subheader: ${error}`)
+  }
 }
+
+async function editModules(item?: CourseTreeItem, context?: vscode.ExtensionContext) {
+  if (!item || !item.courseInfo) {
+    vscode.window.showErrorMessage('No course selected')
+    return
+  }
+
+  const modulesPath = path.join(item.courseInfo.localPath, 'modules.yaml')
+  
+  // Create modules.yaml if it doesn't exist
+  if (!fs.existsSync(modulesPath)) {
+    const createNew = await vscode.window.showInformationMessage(
+      'No modules.yaml file found. Create one?',
+      'Create',
+      'Cancel'
+    )
+    if (createNew !== 'Create') {
+      return
+    }
+    fs.writeFileSync(modulesPath, 'modules: []\n', 'utf8')
+  }
+
+  ModuleEditorPanel.createOrShow(extensionContext.extensionUri, modulesPath, item.courseInfo.name)
+}
+
+async function approveAndMergeWorktree(item?: CourseTreeItem) {
+  /**
+   * Approve all reviews for a worktree and merge it back to main branch.
+   * Deletes the worktree and archives review history.
+   */
+  const coursePath = getCoursePath(item)
+  if (!coursePath) {
+    vscode.window.showErrorMessage('Please select a course or open a folder')
+    return
+  }
+
+  try {
+    // Get list of worktrees
+    const { execSync } = require('child_process')
+    const worktreeOutput = execSync('git worktree list --porcelain', {
+      cwd: coursePath,
+      encoding: 'utf8'
+    })
+
+    const worktrees: string[] = []
+    for (const line of worktreeOutput.split('\n').filter((l: string) => l.trim())) {
+      if (line.startsWith('worktree ')) {
+        const worktreePath = line.substring(9)
+        const worktreeName = path.basename(worktreePath)
+        worktrees.push(worktreeName)
+      }
+    }
+
+    if (worktrees.length === 0) {
+      vscode.window.showInformationMessage('No active worktrees found')
+      return
+    }
+
+    // Let user select which worktree to merge
+    const selectedWorktree = await vscode.window.showQuickPick(worktrees, {
+      placeHolder: 'Select a worktree to approve and merge'
+    })
+
+    if (!selectedWorktree) {
+      return
+    }
+
+    // Show confirmation dialog
+    const confirmMerge = await vscode.window.showWarningMessage(
+      `Merge worktree "${selectedWorktree}" to main and delete it?`,
+      'Merge & Delete',
+      'Cancel'
+    )
+
+    if (confirmMerge !== 'Merge & Delete') {
+      return
+    }
+
+    // Call MCP tool to approve and merge
+    const result = await mcpClient?.callTool('approve_and_merge_worktree', {
+      course_path: coursePath,
+      worktree_name: selectedWorktree,
+      approved_by_agent_id: 'human-approver',
+      review_summary: 'Approved by human reviewer'
+    }) as any
+
+    if (result && result.status === 'success') {
+      vscode.window.showInformationMessage(
+        `✓ Successfully merged worktree "${selectedWorktree}" to main.\nReviews archived. Check Canvas sync status.`,
+        'Check Canvas Sync'
+      ).then(selection => {
+        if (selection === 'Check Canvas Sync') {
+          showStatus(item)
+        }
+      })
+
+      // Refresh tree
+      if (courseTreeProvider && 'refreshCourses' in courseTreeProvider) {
+        (courseTreeProvider as any).refreshCourses()
+      }
+    } else if (result && result.status === 'merge_conflict') {
+      vscode.window.showErrorMessage(
+        `Merge conflict detected in worktree "${selectedWorktree}".\nResolve conflicts in git and try again.`
+      )
+    } else {
+      vscode.window.showErrorMessage(`Failed to merge worktree: ${result && result.error ? result.error : 'Unknown error'}`)
+    }
+  } catch (error) {
+    vscode.window.showErrorMessage(`Error: ${error}`)
+  }
+}
+
+async function importWorktreesFromFolder() {
+  /**
+   * Import/attach existing worktree directories into a repository.
+   * Prompts for repo root and external worktrees folder (default: ~/dig4503-worktrees).
+   */
+  // Pick repository root
+  const repoUri = await vscode.window.showOpenDialog({
+    canSelectFiles: false,
+    canSelectFolders: true,
+    canSelectMany: false,
+    openLabel: 'Select Repository Root'
+  })
+
+  if (!repoUri || repoUri.length === 0) {
+    return
+  }
+
+  const repoRoot = repoUri[0].fsPath
+
+  // Pick external worktrees folder (offer default)
+  const defaultWorktreesPath = require('os').homedir() + '/dig4503-worktrees'
+  const worktreesChoice = await vscode.window.showQuickPick([
+    { label: defaultWorktreesPath, description: 'Default from prompt', value: defaultWorktreesPath },
+    { label: 'Choose folder…', description: 'Pick a different directory', value: 'choose' }
+  ], { placeHolder: 'Select external worktrees folder' })
+
+  if (!worktreesChoice) { return }
+
+  let worktreesRoot = worktreesChoice.value
+  if (worktreesChoice.value === 'choose') {
+    const wtUri = await vscode.window.showOpenDialog({
+      canSelectFiles: false,
+      canSelectFolders: true,
+      canSelectMany: false,
+      openLabel: 'Select Worktrees Folder'
+    })
+    if (!wtUri || wtUri.length === 0) { return }
+    worktreesRoot = wtUri[0].fsPath
+  }
+
+  if (!fs.existsSync(worktreesRoot)) {
+    vscode.window.showErrorMessage(`Worktrees folder not found: ${worktreesRoot}`)
+    return
+  }
+
+  try {
+    const { execSync } = require('child_process')
+
+    // Current registered worktrees
+    const listOut = execSync('git worktree list --porcelain', { cwd: repoRoot, encoding: 'utf8' })
+    const registeredPaths = new Set<string>()
+    for (const line of listOut.split('\n')) {
+      if (line.startsWith('worktree ')) {
+        registeredPaths.add(line.substring(9).trim())
+      }
+    }
+
+    // Iterate subdirectories under external root
+    const entries = fs.readdirSync(worktreesRoot, { withFileTypes: true })
+    const attached: string[] = []
+    const already: string[] = []
+    const skipped: string[] = []
+    const errors: string[] = []
+
+    for (const ent of entries) {
+      if (!ent.isDirectory()) continue
+      const wtPath = path.join(worktreesRoot, ent.name)
+
+      // If already registered, skip
+      if (registeredPaths.has(wtPath)) {
+        already.push(wtPath)
+        continue
+      }
+
+      // Detect branch from HEAD
+      let branch: string | undefined
+      try {
+        const headFilePath = path.join(wtPath, '.git', 'HEAD')
+        const headFileContentPath = path.join(wtPath, '.git')
+        if (fs.existsSync(headFilePath)) {
+          const head = fs.readFileSync(headFilePath, 'utf8').trim()
+          const m = head.match(/^ref:\s*refs\/heads\/(.+)$/)
+          if (m) branch = m[1]
+        } else {
+          // Worktree layout may be a .git file pointing to gitdir
+          const dotGit = path.join(wtPath, '.git')
+          if (fs.existsSync(dotGit) && fs.statSync(dotGit).isFile()) {
+            const content = fs.readFileSync(dotGit, 'utf8')
+            // If it's a worktree already, it should point to repo .git/worktrees
+            if (/gitdir:\s*/.test(content)) {
+              already.push(wtPath)
+              continue
+            }
+          }
+        }
+      } catch (e) {
+        // Could not read HEAD
+      }
+
+      if (!branch) {
+        skipped.push(wtPath)
+        continue
+      }
+
+      // Attach as worktree to repo
+      try {
+        execSync(`git worktree add --force "${wtPath}" "${branch}"`, { cwd: repoRoot, stdio: 'pipe' })
+        attached.push(`${wtPath} ← ${branch}`)
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e)
+        errors.push(`${wtPath}: ${msg}`)
+      }
+    }
+
+    const lines: string[] = []
+    if (attached.length) lines.push(`Attached: ${attached.length}\n` + attached.map(a => `  + ${a}`).join('\n'))
+    if (already.length) lines.push(`Already registered: ${already.length}\n` + already.map(a => `  = ${a}`).join('\n'))
+    if (skipped.length) lines.push(`Skipped (no branch detected): ${skipped.length}\n` + skipped.map(a => `  ~ ${a}`).join('\n'))
+    if (errors.length) lines.push(`Errors: ${errors.length}\n` + errors.map(a => `  ! ${a}`).join('\n'))
+
+    vscode.window.showInformationMessage(`Import complete. Attached ${attached.length}, already registered ${already.length}, skipped ${skipped.length}.`)
+
+    const channel = vscode.window.createOutputChannel('Canvas Author')
+    channel.clear()
+    channel.appendLine('Import Worktrees Report')
+    channel.appendLine('=======================')
+    channel.appendLine(lines.join('\n\n'))
+    channel.show()
+  } catch (error) {
+    vscode.window.showErrorMessage(`Failed to import worktrees: ${error}`)
+  }
+}
+

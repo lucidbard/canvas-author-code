@@ -10,6 +10,9 @@ const ICONS = {
   modified: new vscode.ThemeIcon('warning', new vscode.ThemeColor('editorWarning.foreground')),
   localOnly: new vscode.ThemeIcon('cloud-upload', new vscode.ThemeColor('gitDecoration.untrackedResourceForeground')),
   canvasOnly: new vscode.ThemeIcon('cloud-download', new vscode.ThemeColor('gitDecoration.deletedResourceForeground')),
+  pendingReview: new vscode.ThemeIcon('comment', new vscode.ThemeColor('editorWarning.foreground')),
+  reviewApproved: new vscode.ThemeIcon('comment-discussion', new vscode.ThemeColor('testing.iconPassed')),
+  inWorktree: new vscode.ThemeIcon('git-branch', new vscode.ThemeColor('gitDecoration.modifiedResourceForeground')),
   course: new vscode.ThemeIcon('book'),
   pages: new vscode.ThemeIcon('file-text'),
   quizzes: new vscode.ThemeIcon('tasklist'),
@@ -25,7 +28,7 @@ const ICONS = {
   addCourse: new vscode.ThemeIcon('add')
 }
 
-export type SyncStatus = 'synced' | 'modified' | 'localOnly' | 'canvasOnly' | 'unknown'
+export type SyncStatus = 'synced' | 'modified' | 'localOnly' | 'canvasOnly' | 'unknown' | 'pendingReview' | 'reviewApproved' | 'inWorktree'
 
 export interface CourseInfo {
   id: string
@@ -42,6 +45,7 @@ export interface CourseRegistry {
 
 export class CourseTreeItem extends vscode.TreeItem {
   public externalUrl?: string  // For external URL module items
+  public isSubheader?: boolean  // For subheader module items
 
   constructor(
     public readonly label: string,
@@ -112,6 +116,9 @@ export class CourseTreeItem extends vscode.TreeItem {
       case 'modified': return ICONS.modified
       case 'localOnly': return ICONS.localOnly
       case 'canvasOnly': return ICONS.canvasOnly
+      case 'pendingReview': return ICONS.pendingReview
+      case 'reviewApproved': return ICONS.reviewApproved
+      case 'inWorktree': return ICONS.inWorktree
       default: return undefined
     }
   }
@@ -123,7 +130,10 @@ export class CourseTreeItem extends vscode.TreeItem {
         modified: 'Modified locally',
         localOnly: 'Local only - not in Canvas',
         canvasOnly: 'Canvas only - not downloaded',
-        unknown: 'Sync status unknown'
+        unknown: 'Sync status unknown',
+        pendingReview: 'Pending review from agents',
+        reviewApproved: 'Review approved',
+        inWorktree: 'Being edited in a worktree'
       }
       this.tooltip = statusText[this.syncStatus] || this.label
     }
@@ -133,7 +143,14 @@ export class CourseTreeItem extends vscode.TreeItem {
   }
 
   private setCommand() {
-    if (this.itemType === 'settings') {
+    if (this.itemType === 'category' && this.label === 'Modules') {
+      // Modules category opens the module editor
+      this.command = {
+        command: 'canvas-author.editModules',
+        title: 'Edit Modules',
+        arguments: [this]
+      }
+    } else if (this.itemType === 'settings') {
       // Settings uses a special command that handles file creation
       this.command = {
         command: 'canvas-author.openSettings',
@@ -162,14 +179,29 @@ export class CourseTreeItem extends vscode.TreeItem {
         arguments: [vscode.Uri.file(this.resourcePath)]
       }
     } else if (this.resourcePath && this.itemType === 'moduleItem') {
-      // Module items that are pages should also open in preview
+      // Module items that are pages should open in preview
       if (this.description === 'page') {
         this.command = {
           command: 'markdown.showPreview',
           title: 'Open Preview',
           arguments: [vscode.Uri.file(this.resourcePath)]
         }
+      } else if (this.description === 'quiz') {
+        // Quiz module items should use the quiz preview command
+        this.command = {
+          command: 'canvas-author.previewQuiz',
+          title: 'Preview Quiz',
+          arguments: [this]
+        }
+      } else if (this.description === 'assignment') {
+        // Assignment module items should use the assignment command
+        this.command = {
+          command: 'canvas-author.openAssignment',
+          title: 'Open Assignment',
+          arguments: [this]
+        }
       } else {
+        // Other files (discussions, etc.) open normally
         this.command = {
           command: 'vscode.open',
           title: 'Open File',
@@ -371,7 +403,10 @@ export class CourseTreeProvider implements vscode.TreeDataProvider<CourseTreeIte
 
   async getChildren(element?: CourseTreeItem): Promise<CourseTreeItem[]> {
     if (!element) {
-      // Root level: show courses and "Add Course" item
+      // Root level: if single course, show categories directly; otherwise show courses
+      if (this.registry.courses.length === 1) {
+        return this.getCourseCategories(this.registry.courses[0])
+      }
       return this.getCourses()
     }
 
@@ -396,7 +431,7 @@ export class CourseTreeProvider implements vscode.TreeDataProvider<CourseTreeIte
   private getCourses(): CourseTreeItem[] {
     const items: CourseTreeItem[] = []
 
-    // Add registered courses
+    // Add registered courses (only called when multiple courses exist)
     for (const course of this.registry.courses) {
       items.push(new CourseTreeItem(
         course.name,
@@ -532,8 +567,26 @@ export class CourseTreeProvider implements vscode.TreeDataProvider<CourseTreeIte
 
       const fileName = path.basename(file, '.md')
       const title = this.extractTitleFromFrontmatter(file) || fileName
-      const status = await this.getFileSyncStatus(file, course)
+      let status = await this.getFileSyncStatus(file, course)
       const published = this.extractPublishedStatus(file)
+      
+      // Check for worktree context
+      const worktreeContext = this.getFileWorktreeContext(file, coursePath)
+      if (worktreeContext?.inWorktree) {
+        status = 'inWorktree'
+      }
+      
+      // Check for review status (if not in worktree, check reviews on main)
+      if (!worktreeContext?.inWorktree) {
+        const pageId = this.extractPageIdFromFrontmatter(file)
+        if (pageId) {
+          const reviewStatus = await this.getItemReviewStatus(`page:${pageId}`, coursePath)
+          if (reviewStatus) {
+            status = reviewStatus
+          }
+        }
+      }
+      
       const item = new CourseTreeItem(
         title,
         vscode.TreeItemCollapsibleState.None,
@@ -542,9 +595,13 @@ export class CourseTreeProvider implements vscode.TreeDataProvider<CourseTreeIte
         file,
         status
       )
-      if (published !== null) {
+      
+      if (worktreeContext?.inWorktree) {
+        item.description = `$(git-branch) ${worktreeContext.worktreeName}`
+      } else if (published !== null) {
         item.description = published ? '$(check) Published' : '$(circle-slash) Unpublished'
       }
+      
       items.push(item)
     }
 
@@ -769,8 +826,9 @@ export class CourseTreeProvider implements vscode.TreeDataProvider<CourseTreeIte
           const label = item.title || item.page_url || item.url || 'Unknown'
           const itemType = item.type || 'unknown'
 
-          // Find the local file path if it's a page
+          // Find the local file path based on item type
           let resourcePath: string | undefined
+          
           if (itemType === 'page' && item.page_url) {
             // Check pages/ subdirectory first, then fall back to root
             const pagesSubdirPath = path.join(course.localPath, 'pages', `${item.page_url}.md`)
@@ -780,6 +838,34 @@ export class CourseTreeProvider implements vscode.TreeDataProvider<CourseTreeIte
               resourcePath = pagesSubdirPath
             } else if (fs.existsSync(rootPath)) {
               resourcePath = rootPath
+            }
+          } else if (itemType === 'assignment' && item.content_id) {
+            // Try to find the assignment file in assignments directory
+            const assignmentsPath = path.join(course.localPath, 'assignments')
+            if (fs.existsSync(assignmentsPath)) {
+              const assignmentFiles = this.findFiles(assignmentsPath, '.md')
+              // Try to match by title or content_id
+              const matched = assignmentFiles.find(f => {
+                const title = this.extractTitleFromFrontmatter(f)
+                return title === label || path.basename(f, '.md') === item.content_id
+              })
+              if (matched) {
+                resourcePath = matched
+              }
+            }
+          } else if (itemType === 'quiz' && item.content_id) {
+            // Try to find the quiz file in quizzes directory
+            const quizzesPath = path.join(course.localPath, 'quizzes')
+            if (fs.existsSync(quizzesPath)) {
+              const quizFiles = this.findFiles(quizzesPath, '.quiz.md')
+              // Try to match by title or content_id
+              const matched = quizFiles.find(f => {
+                const title = this.extractTitleFromFrontmatter(f)
+                return title === label || path.basename(f, '.quiz.md') === item.content_id
+              })
+              if (matched) {
+                resourcePath = matched
+              }
             }
           }
 
@@ -794,6 +880,13 @@ export class CourseTreeProvider implements vscode.TreeDataProvider<CourseTreeIte
           )
           // Store item type in description for icon selection
           treeItem.description = itemType
+          
+          // Mark subheaders and style them differently
+          if (itemType === 'subheader') {
+            treeItem.isSubheader = true
+            treeItem.contextValue = 'moduleItem.subheader'
+          }
+          
           // Set external URL for link items
           if (itemType === 'external_url' && item.url) {
             treeItem.externalUrl = item.url
@@ -817,8 +910,14 @@ export class CourseTreeProvider implements vscode.TreeDataProvider<CourseTreeIte
     let currentItem: { type?: string; title?: string; page_url?: string; url?: string; content_id?: string } | null = null
     let inItems = false
     let inModulesList = false
+    let currentIndent = 0
 
     for (const line of lines) {
+      // Skip empty lines
+      if (!line.trim()) {
+        continue
+      }
+
       // Check for modules: key at root level
       if (line.match(/^modules:\s*$/)) {
         inModulesList = true
@@ -840,13 +939,16 @@ export class CourseTreeProvider implements vscode.TreeDataProvider<CourseTreeIte
         moduleName = moduleName.replace(/^["']|["']$/g, '')
         currentModule = { name: moduleName, items: [] }
         inItems = false
+        currentIndent = line.match(/^\s*/)?.[0].length || 0
         continue
       }
 
-      // Published field
-      const publishedMatch = line.match(/^\s+published:\s*(true|false)\s*$/)
-      if (publishedMatch && currentModule) {
-        currentModule.published = publishedMatch[1] === 'true'
+      // Published field or other module properties
+      if (line.match(/^\s+published:\s*(true|false)\s*$/) && currentModule) {
+        const publishedMatch = line.match(/^\s+published:\s*(true|false)\s*$/)
+        if (publishedMatch) {
+          currentModule.published = publishedMatch[1] === 'true'
+        }
         continue
       }
 
@@ -857,35 +959,49 @@ export class CourseTreeProvider implements vscode.TreeDataProvider<CourseTreeIte
         continue
       }
 
-      // Item start - type field
-      const typeMatch = line.match(/^\s+-\s*type:\s*(.+)$/)
-      if (typeMatch && currentModule && inItems) {
+      // Item start - any line starting with dash at item indentation level
+      const itemStartMatch = line.match(/^\s+-\s+(.+):\s*(.+)$/)
+      if (itemStartMatch && inItems) {
+        // This is a new item
         if (currentItem) {
-          currentModule.items!.push(currentItem)
+          currentModule!.items!.push(currentItem)
         }
-        // Normalize type to lowercase for consistency
-        currentItem = { type: typeMatch[1].trim().toLowerCase() }
+        const fieldName = itemStartMatch[1].trim().toLowerCase()
+        const fieldValue = itemStartMatch[2].trim().replace(/^["']|["']$/g, '')
+        
+        currentItem = {}
+        if (fieldName === 'type') {
+          currentItem.type = fieldValue.toLowerCase()
+        } else if (fieldName === 'title') {
+          currentItem.title = fieldValue
+        } else if (fieldName === 'page_url') {
+          currentItem.page_url = fieldValue
+        } else if (fieldName === 'url') {
+          currentItem.url = fieldValue
+        } else if (fieldName === 'content_id') {
+          currentItem.content_id = fieldValue
+        }
         continue
       }
 
-      // Item properties
-      if (currentItem && inItems) {
-        const pageUrlMatch = line.match(/^\s+page_url:\s*(.+)$/)
-        const titleMatch = line.match(/^\s+title:\s*(.+)$/)
-        const urlMatch = line.match(/^\s+url:\s*(.+)$/)
-        const contentIdMatch = line.match(/^\s+content_id:\s*(.+)$/)
+      // Item properties (lines without dash, but with indentation inside items)
+      if (currentItem && inItems && !line.match(/^\s*-/)) {
+        const propertyMatch = line.match(/^\s+(\w+):\s*(.+)$/)
+        if (propertyMatch) {
+          const fieldName = propertyMatch[1].trim().toLowerCase()
+          const fieldValue = propertyMatch[2].trim().replace(/^["']|["']$/g, '')
 
-        if (pageUrlMatch) {
-          currentItem.page_url = pageUrlMatch[1].trim().replace(/^["']|["']$/g, '')
-        }
-        if (titleMatch) {
-          currentItem.title = titleMatch[1].trim().replace(/^["']|["']$/g, '')
-        }
-        if (urlMatch) {
-          currentItem.url = urlMatch[1].trim().replace(/^["']|["']$/g, '')
-        }
-        if (contentIdMatch) {
-          currentItem.content_id = contentIdMatch[1].trim().replace(/^["']|["']$/g, '')
+          if (fieldName === 'type') {
+            currentItem.type = fieldValue.toLowerCase()
+          } else if (fieldName === 'title') {
+            currentItem.title = fieldValue
+          } else if (fieldName === 'page_url') {
+            currentItem.page_url = fieldValue
+          } else if (fieldName === 'url') {
+            currentItem.url = fieldValue
+          } else if (fieldName === 'content_id') {
+            currentItem.content_id = fieldValue
+          }
         }
       }
     }
@@ -939,6 +1055,71 @@ export class CourseTreeProvider implements vscode.TreeDataProvider<CourseTreeIte
     } catch (err) {
       // Silently fail if git is unavailable or command fails
       return []
+    }
+  }
+
+  private getFileWorktreeContext(filePath: string, coursePath: string): { worktreeName: string; inWorktree: boolean } | null {
+    /**
+     * Check if a file is in a worktree and return the worktree name.
+     */
+    try {
+      const relativePath = path.relative(coursePath, filePath)
+      const pathParts = relativePath.split(path.sep)
+      
+      if (pathParts.length === 0) {
+        return null
+      }
+
+      const firstPart = pathParts[0]
+      const worktrees = this.getGitWorktrees(coursePath)
+
+      if (worktrees.includes(firstPart)) {
+        return {
+          worktreeName: firstPart,
+          inWorktree: true
+        }
+      }
+
+      return null
+    } catch (err) {
+      return null
+    }
+  }
+
+  private async getItemReviewStatus(itemId: string, coursePath: string): Promise<SyncStatus | undefined> {
+    /**
+     * Check if an item has pending reviews by querying the MCP server.
+     * Returns a review status or undefined if no review data available.
+     */
+    try {
+      if (!this.mcpClient) {
+        return undefined
+      }
+
+      // Query MCP for item review history
+      const result = await this.mcpClient.callTool('get_item_review_history', {
+        course_path: coursePath,
+        item_id: itemId,
+        include_archived: false
+      })
+
+      if (result && Array.isArray(result) && result.length > 0) {
+        const latestReview = result[0] as any
+        
+        // Check final status
+        if (latestReview.item && latestReview.item.status === 'approved') {
+          return 'reviewApproved'
+        } else if (latestReview.item && latestReview.item.status === 'rejected') {
+          return 'pendingReview'
+        } else if (latestReview.item && latestReview.item.status.includes('escalation')) {
+          return 'pendingReview'
+        }
+      }
+
+      return undefined
+    } catch (err) {
+      // Silently fail if MCP call fails
+      return undefined
     }
   }
 
@@ -1019,6 +1200,31 @@ export class CourseTreeProvider implements vscode.TreeDataProvider<CourseTreeIte
       if (match) {
         return match[1].toLowerCase() === 'true'
       }
+      return null
+    } catch (e) {
+      return null
+    }
+  }
+
+  private extractPageIdFromFrontmatter(filePath: string): string | null {
+    try {
+      const content = fs.readFileSync(filePath, 'utf8')
+      
+      // Match YAML frontmatter between --- markers
+      const frontmatterMatch = content.match(/^---\s*\n([\s\S]*?)\n---/)
+      if (!frontmatterMatch) {
+        return null
+      }
+
+      const frontmatter = frontmatterMatch[1]
+
+      // Extract page_id field
+      const pageIdMatch = frontmatter.match(/^page_id:\s*(.+)$/m)
+      if (pageIdMatch) {
+        const pageId = pageIdMatch[1].trim()
+        return pageId
+      }
+
       return null
     } catch (e) {
       return null

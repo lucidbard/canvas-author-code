@@ -49,6 +49,7 @@ export class QuizPreviewPanel {
   private readonly _extensionUri!: vscode.Uri
   private _quizPath!: string
   private _currentQuiz: ParsedQuiz | null = null
+  private _fileWatcher: fs.FSWatcher | undefined
   private _disposables: vscode.Disposable[] = []
 
   public static createOrShow(extensionUri: vscode.Uri, quizPath: string): void {
@@ -88,6 +89,7 @@ export class QuizPreviewPanel {
     this._quizPath = quizPath
 
     this._updateHtml()
+    this._startFileWatcher()
 
     this._panel.onDidDispose(() => this.dispose(), null, this._disposables)
 
@@ -139,6 +141,7 @@ export class QuizPreviewPanel {
     const quizName = path.basename(quizPath, '.md')
     this._panel.title = 'Quiz: ' + quizName
     this._updateHtml()
+    this._startFileWatcher()
   }
 
   private async _openMarkdownFile(): Promise<void> {
@@ -336,9 +339,10 @@ export class QuizPreviewPanel {
             value = rawValue
           }
 
-          if (rawValue === 'true') value = true
-          else if (rawValue === 'false') value = false
-          else if (rawValue === 'null' || rawValue === '') value = undefined
+          const lowerRaw = rawValue.toLowerCase()
+          if (lowerRaw === 'true') value = true
+          else if (lowerRaw === 'false') value = false
+          else if (lowerRaw === 'null' || rawValue === '') value = undefined
           else if (!isNaN(Number(rawValue)) && rawValue !== '') value = Number(rawValue)
 
           metadata[key] = value
@@ -461,13 +465,30 @@ export class QuizPreviewPanel {
       this._panel.webview.html = this._getErrorHtml('Quiz file not found')
       return
     }
-
     try {
       const content = fs.readFileSync(this._quizPath, 'utf8')
       this._currentQuiz = this._parseQuiz(content)
       this._panel.webview.html = this._getHtml(this._currentQuiz)
     } catch (error) {
       this._panel.webview.html = this._getErrorHtml('Failed to parse quiz: ' + error)
+    }
+  }
+
+  private _startFileWatcher(): void {
+    this._disposeFileWatcher()
+    try {
+      this._fileWatcher = fs.watch(this._quizPath, { persistent: false }, () => {
+        this._updateHtml()
+      })
+    } catch (err) {
+      console.error('Failed to watch quiz file', err)
+    }
+  }
+
+  private _disposeFileWatcher(): void {
+    if (this._fileWatcher) {
+      this._fileWatcher.close()
+      this._fileWatcher = undefined
     }
   }
 
@@ -1011,6 +1032,7 @@ export class QuizPreviewPanel {
 
   public dispose(): void {
     QuizPreviewPanel.currentPanel = undefined
+    this._disposeFileWatcher()
     this._panel.dispose()
     while (this._disposables.length) {
       const disposable = this._disposables.pop()
