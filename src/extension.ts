@@ -8,6 +8,8 @@ import { CoursePickerPanel, Course as PickerCourse } from './coursePickerPanel'
 import { MetadataPanel } from './metadataPanel'
 import { RubricPreviewPanel } from './rubricPreviewPanel'
 import { SubmissionsPanel } from './submissionsPanel'
+import { CourseSettingsPanel } from './courseSettingsPanel'
+import { QuizPreviewPanel } from './quizPreviewPanel'
 
 // Response type interfaces
 interface Course {
@@ -236,6 +238,7 @@ export async function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('canvas-author.deleteAssignment', (item?: CourseTreeItem) => deleteAssignment(item)),
     vscode.commands.registerCommand('canvas-author.deletePage', (item?: CourseTreeItem) => deletePage(item)),
     vscode.commands.registerCommand('canvas-author.previewRubric', () => previewRubric(context)),
+    vscode.commands.registerCommand('canvas-author.previewQuiz', (item?: CourseTreeItem) => previewQuiz(item, context)),
 
     // Onboarding command
     vscode.commands.registerCommand('canvas-author.showOnboarding', () => OnboardingPanel.createOrShow(context))
@@ -306,10 +309,10 @@ async function gitCommit(filePath: string, message: string): Promise<void> {
   try {
     const { execSync } = require('child_process')
     const dir = path.dirname(filePath)
-    
+
     // Stage the file change (or deletion)
     execSync(`git add "${filePath}"`, { cwd: dir })
-    
+
     // Commit with the provided message
     execSync(`git commit -m "${message.replace(/"/g, '\\"')}"`, { cwd: dir })
   } catch (err) {
@@ -946,13 +949,17 @@ async function openSettings(item?: CourseTreeItem) {
 
   // Check if course.yaml exists
   if (fs.existsSync(settingsPath)) {
-    // Open existing file
-    const doc = await vscode.workspace.openTextDocument(settingsPath)
-    await vscode.window.showTextDocument(doc)
+    // Open the settings panel UI
+    CourseSettingsPanel.createOrShow(
+      extensionContext.extensionUri,
+      courseInfo.localPath,
+      courseInfo.id,
+      courseInfo.name
+    )
     return
   }
 
-  // File doesn't exist - offer to pull settings from Canvas
+  // File doesn't exist - offer to pull settings from Canvas or create empty
   const choice = await vscode.window.showInformationMessage(
     'Course settings file (course.yaml) not found. Would you like to pull settings from Canvas?',
     'Pull Settings',
@@ -992,8 +999,13 @@ async function openSettings(item?: CourseTreeItem) {
       courseTreeProvider.refresh()
 
       if (fs.existsSync(settingsPath)) {
-        const doc = await vscode.workspace.openTextDocument(settingsPath)
-        await vscode.window.showTextDocument(doc)
+        // Open the settings panel UI
+        CourseSettingsPanel.createOrShow(
+          extensionContext.extensionUri,
+          courseInfo.localPath,
+          courseInfo.id,
+          courseInfo.name
+        )
         vscode.window.showInformationMessage('Course settings pulled from Canvas')
       } else {
         vscode.window.showWarningMessage('Pull completed but course.yaml was not created')
@@ -1006,29 +1018,22 @@ async function openSettings(item?: CourseTreeItem) {
     const content = `# Course Settings for ${courseInfo.name}
 # This file stores course configuration that can be synced with Canvas
 
-course_id: "${courseInfo.id}"
-name: "${courseInfo.name}"
-course_code: "${courseInfo.courseCode}"
-
-# Display settings
-# default_view: modules  # modules, syllabus, assignments, feed, wiki
-
-# Visibility
-# published: false
-# is_public: false
-
-# Dates
-# start_at: null
-# end_at: null
-# time_zone: null
+course_id: ${courseInfo.id}
+name: ${courseInfo.name}
+course_code: ${courseInfo.courseCode}
 `
 
     fs.writeFileSync(settingsPath, content)
     courseTreeProvider.refresh()
 
-    const doc = await vscode.workspace.openTextDocument(settingsPath)
-    await vscode.window.showTextDocument(doc)
-    vscode.window.showInformationMessage('Created empty course.yaml - edit and push to update Canvas settings')
+    // Open the settings panel UI
+    CourseSettingsPanel.createOrShow(
+      extensionContext.extensionUri,
+      courseInfo.localPath,
+      courseInfo.id,
+      courseInfo.name
+    )
+    vscode.window.showInformationMessage('Course settings created - use the form to configure and save')
   }
 }
 
@@ -1044,7 +1049,7 @@ async function openAssignment(item?: CourseTreeItem, context?: vscode.ExtensionC
   // Extract assignment_id from frontmatter to show submissions
   const content = fs.readFileSync(item.resourcePath, 'utf8')
   const assignmentIdMatch = content.match(/assignment_id:\s*['"]?(\d+)['"]?/)
-  
+
   if (assignmentIdMatch && submissionsPanel && item.courseInfo) {
     const assignmentId = assignmentIdMatch[1]
     await submissionsPanel.showAssignmentSubmissions(item.courseInfo.id, assignmentId, item.label)
@@ -1053,25 +1058,25 @@ async function openAssignment(item?: CourseTreeItem, context?: vscode.ExtensionC
   // Check if a rubric exists for this assignment
   const assignmentName = path.basename(item.resourcePath, '.md')
   const rubricsPath = path.join(item.courseInfo.localPath, 'rubrics')
-  
+
   if (!fs.existsSync(rubricsPath)) {
     return
   }
 
   // Look for a rubric file matching the assignment name
   const possibleRubricPath = path.join(rubricsPath, `${assignmentName}.rubric.yaml`)
-  
+
   if (fs.existsSync(possibleRubricPath) && context) {
     // Open rubric preview alongside the assignment
     RubricPreviewPanel.createOrShow(context.extensionUri, possibleRubricPath, item.label)
   } else {
     // Try to find any rubric file that references this assignment
     const rubricFiles = fs.readdirSync(rubricsPath).filter(f => f.endsWith('.rubric.yaml'))
-    
+
     for (const rubricFile of rubricFiles) {
       const rubricPath = path.join(rubricsPath, rubricFile)
       const content = fs.readFileSync(rubricPath, 'utf8')
-      
+
       // Check if this rubric's assignment_name matches
       const match = content.match(/assignment_name:\s*["']?([^"'\n]+)["']?/)
       if (match && match[1] === item.label) {
@@ -1103,7 +1108,7 @@ async function deleteAssignment(item?: CourseTreeItem) {
     // Extract assignment_id from frontmatter
     const content = fs.readFileSync(item.resourcePath, 'utf8')
     const assignmentIdMatch = content.match(/assignment_id:\s*['"]?(\d+)['"]?/)
-    
+
     // Delete from Canvas if it has an assignment_id
     if (assignmentIdMatch && mcpClient) {
       const assignmentId = assignmentIdMatch[1]
@@ -1121,12 +1126,12 @@ async function deleteAssignment(item?: CourseTreeItem) {
 
     // Delete local file
     fs.unlinkSync(item.resourcePath)
-    
+
     // Auto-commit the deletion
     await gitCommit(item.resourcePath, `Delete assignment: ${item.label}`)
 
     vscode.window.showInformationMessage(`Deleted assignment: ${item.label}`)
-    
+
     // Refresh the tree
     courseTreeProvider?.refresh()
   } catch (err) {
@@ -1153,7 +1158,7 @@ async function deletePage(item?: CourseTreeItem) {
     // Extract page_id from frontmatter
     const content = fs.readFileSync(item.resourcePath, 'utf8')
     const pageIdMatch = content.match(/page_id:\s*['"]?(\d+)['"]?/)
-    
+
     // Delete from Canvas if it has a page_id
     if (pageIdMatch && mcpClient) {
       const pageId = pageIdMatch[1]
@@ -1171,12 +1176,12 @@ async function deletePage(item?: CourseTreeItem) {
 
     // Delete local file
     fs.unlinkSync(item.resourcePath)
-    
+
     // Auto-commit the deletion
     await gitCommit(item.resourcePath, `Delete page: ${item.label}`)
 
     vscode.window.showInformationMessage(`Deleted page: ${item.label}`)
-    
+
     // Refresh the tree
     courseTreeProvider?.refresh()
   } catch (err) {
@@ -2332,6 +2337,44 @@ Add your announcement content here.
   await vscode.window.showTextDocument(doc)
 
   vscode.window.showInformationMessage(`Created announcement: ${title}`)
+}
+
+async function previewQuiz(item?: CourseTreeItem, context?: vscode.ExtensionContext) {
+  if (!context) {
+    vscode.window.showErrorMessage('Extension context not available')
+    return
+  }
+
+  let quizPath: string | undefined
+
+  // If called from tree view with a quiz item
+  if (item && item.resourcePath) {
+    quizPath = item.resourcePath
+  } else {
+    // If called from command palette, use active editor
+    const activeEditor = vscode.window.activeTextEditor
+    if (activeEditor) {
+      const filePath = activeEditor.document.uri.fsPath
+      // Check if this is a quiz file (in quizzes folder or has quiz frontmatter)
+      if (filePath.includes('/quizzes/') || filePath.includes('\\quizzes\\')) {
+        quizPath = filePath
+      } else {
+        // Check frontmatter for quiz_id
+        const content = activeEditor.document.getText()
+        if (content.includes('quiz_id:') || content.includes('quiz_type:')) {
+          quizPath = filePath
+        }
+      }
+    }
+  }
+
+  if (!quizPath) {
+    vscode.window.showErrorMessage('Please select a quiz file to preview')
+    return
+  }
+
+  // Show the preview
+  QuizPreviewPanel.createOrShow(context.extensionUri, quizPath)
 }
 
 async function previewRubric(context: vscode.ExtensionContext) {

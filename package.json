@@ -194,6 +194,11 @@
           "group": "navigation@1"
         },
         {
+          "command": "canvas-author.previewQuiz",
+          "when": "view == canvasAuthorCourses && viewItem == quiz",
+          "group": "navigation@1"
+        },
+        {
           "command": "canvas-author.openSettings",
           "when": "view == canvasAuthorCourses && viewItem == settings",
           "group": "navigation@1"
@@ -336,6 +341,11 @@
       {
         "command": "canvas-author.previewRubric",
         "title": "Canvas: Preview Rubric",
+        "icon": "$(open-preview)"
+      },
+      {
+        "command": "canvas-author.previewQuiz",
+        "title": "Canvas: Preview Quiz",
         "icon": "$(open-preview)"
       },
       {

@@ -146,7 +146,14 @@ export class CourseTreeItem extends vscode.TreeItem {
         title: 'Open Assignment',
         arguments: [this]
       }
-    } else if (this.resourcePath && (this.itemType === 'page' || this.itemType === 'quiz' || this.itemType === 'rubric' || this.itemType === 'moduleItem')) {
+    } else if (this.itemType === 'quiz' && this.resourcePath) {
+      // Quizzes use a custom preview command
+      this.command = {
+        command: 'canvas-author.previewQuiz',
+        title: 'Preview Quiz',
+        arguments: [this]
+      }
+    } else if (this.resourcePath && (this.itemType === 'page' || this.itemType === 'rubric' || this.itemType === 'moduleItem')) {
       this.command = {
         command: 'vscode.open',
         title: 'Open File',
@@ -771,47 +778,65 @@ export class CourseTreeProvider implements vscode.TreeDataProvider<CourseTreeIte
     let currentModule: { name: string; published?: boolean; items?: Array<{ type?: string; title?: string; page_url?: string; url?: string; content_id?: string }> } | null = null
     let currentItem: { type?: string; title?: string; page_url?: string; url?: string; content_id?: string } | null = null
     let inItems = false
+    let inModulesList = false
 
     for (const line of lines) {
-      // Module start
-      if (line.match(/^- name: (.+)$/)) {
+      // Check for modules: key at root level
+      if (line.match(/^modules:\s*$/)) {
+        inModulesList = true
+        continue
+      }
+      
+      // Module start - handle both root level (- name:) and nested under modules: (  - name:)
+      const moduleMatch = line.match(/^-\s*name:\s*(.+)$/) || line.match(/^\s+-\s*name:\s*(.+)$/)
+      if (moduleMatch) {
+        if (currentItem && currentModule) {
+          currentModule.items!.push(currentItem)
+          currentItem = null
+        }
         if (currentModule) {
           modules.push(currentModule)
         }
-        const match = line.match(/^- name: (.+)$/)
-        currentModule = { name: match![1], items: [] }
+        currentModule = { name: moduleMatch[1].trim(), items: [] }
         inItems = false
-        currentItem = null
+        continue
       }
+      
       // Published field
-      else if (line.match(/^  published: (true|false)$/) && currentModule) {
-        const match = line.match(/^  published: (true|false)$/)
-        currentModule.published = match![1] === 'true'
+      const publishedMatch = line.match(/^\s+published:\s*(true|false)\s*$/)
+      if (publishedMatch && currentModule) {
+        currentModule.published = publishedMatch[1] === 'true'
+        continue
       }
+      
       // Items start
-      else if (line.match(/^  items:$/) && currentModule) {
+      if (line.match(/^\s+items:\s*$/) && currentModule) {
         inItems = true
         currentModule.items = []
+        continue
       }
-      // Item start
-      else if (line.match(/^  - type: (.+)$/) && currentModule && inItems) {
+      
+      // Item start - type field
+      const typeMatch = line.match(/^\s+-\s*type:\s*(.+)$/)
+      if (typeMatch && currentModule && inItems) {
         if (currentItem) {
           currentModule.items!.push(currentItem)
         }
-        const match = line.match(/^  - type: (.+)$/)
-        currentItem = { type: match![1] }
+        currentItem = { type: typeMatch[1].trim() }
+        continue
       }
+      
       // Item properties
-      else if (currentItem && inItems) {
-        const pageUrlMatch = line.match(/^    page_url: (.+)$/)
-        const titleMatch = line.match(/^    title: ['"]?(.+?)['"]?$/)
-        const urlMatch = line.match(/^    url: (.+)$/)
-        const contentIdMatch = line.match(/^    content_id: ['"]?(.+?)['"]?$/)
+      if (currentItem && inItems) {
+        const pageUrlMatch = line.match(/^\s+page_url:\s*(.+)$/)
+        const titleMatch = line.match(/^\s+title:\s*['"]?(.+?)['"]?\s*$/)
+        const urlMatch = line.match(/^\s+url:\s*(.+)$/)
+        const contentIdMatch = line.match(/^\s+content_id:\s*['"]?(.+?)['"]?\s*$/)
 
-        if (pageUrlMatch) currentItem.page_url = pageUrlMatch[1]
-        if (titleMatch) currentItem.title = titleMatch[1]
-        if (urlMatch) currentItem.url = urlMatch[1]
-        if (contentIdMatch) currentItem.content_id = contentIdMatch[1]
+        if (pageUrlMatch) currentItem.page_url = pageUrlMatch[1].trim()
+        if (titleMatch) currentItem.title = titleMatch[1].trim()
+        if (urlMatch) currentItem.url = urlMatch[1].trim()
+        if (contentIdMatch) currentItem.content_id = contentIdMatch[1].trim()
       }
     }
 
