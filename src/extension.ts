@@ -244,6 +244,7 @@ export async function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('canvas-author.editModules', (item?: CourseTreeItem) => editModules(item, context)),
     vscode.commands.registerCommand('canvas-author.approveAndMergeWorktree', (item?: CourseTreeItem) => approveAndMergeWorktree(item)),
     vscode.commands.registerCommand('canvas-author.importWorktreesFromFolder', () => importWorktreesFromFolder()),
+    vscode.commands.registerCommand('canvas-author.testMcpConnection', () => testMcpConnection()),
 
     // Onboarding command
     vscode.commands.registerCommand('canvas-author.showOnboarding', () => OnboardingPanel.createOrShow(context))
@@ -2547,10 +2548,15 @@ async function approveAndMergeWorktree(item?: CourseTreeItem) {
       return
     }
 
-    // Let user select which worktree to merge
-    const selectedWorktree = await vscode.window.showQuickPick(worktrees, {
-      placeHolder: 'Select a worktree to approve and merge'
-    })
+    // If called from a worktree item, pre-select it
+    let selectedWorktree = item?.worktreeName
+    
+    // If not pre-selected, let user select which worktree to merge
+    if (!selectedWorktree) {
+      selectedWorktree = await vscode.window.showQuickPick(worktrees, {
+        placeHolder: 'Select a worktree to approve and merge'
+      })
+    }
 
     if (!selectedWorktree) {
       return
@@ -2731,6 +2737,93 @@ async function importWorktreesFromFolder() {
     channel.show()
   } catch (error) {
     vscode.window.showErrorMessage(`Failed to import worktrees: ${error}`)
+  }
+}
+
+async function testMcpConnection() {
+  const channel = vscode.window.createOutputChannel('Canvas Author - MCP Diagnostics')
+  channel.clear()
+  channel.show()
+
+  channel.appendLine('Canvas Author MCP Diagnostics')
+  channel.appendLine('============================\n')
+
+  if (!mcpClient) {
+    channel.appendLine('❌ MCP client not initialized')
+    channel.appendLine('\nTroubleshooting:')
+    channel.appendLine('1. Make sure Python is installed (python3 --version)')
+    channel.appendLine('2. Install canvas-author package: pip install canvas-author')
+    channel.appendLine('3. Check VS Code settings for canvas-author.pythonPath')
+    channel.appendLine('4. View MCP server logs in "Canvas Author MCP" output channel')
+    vscode.window.showErrorMessage('MCP client not initialized. Check "Canvas Author - MCP Diagnostics" output for details.')
+    return
+  }
+
+  channel.appendLine('✓ MCP client initialized\n')
+
+  try {
+    channel.appendLine('Fetching available tools...\n')
+    const toolsResult = await mcpClient.listTools() as any
+
+    if (toolsResult?.tools && Array.isArray(toolsResult.tools)) {
+      channel.appendLine(`Found ${toolsResult.tools.length} tools:\n`)
+
+      const requiredTools = [
+        'get_item_review_history',
+        'approve_and_merge_worktree',
+        'pull_pages',
+        'push_pages',
+        'pull_assignments',
+        'push_assignments',
+        'pull_quizzes',
+        'push_quizzes',
+        'pull_modules',
+        'push_modules',
+        'pull_rubrics',
+        'push_rubrics',
+        'pull_discussions',
+        'push_discussions',
+        'pull_announcements',
+        'push_announcements'
+      ]
+
+      const availableToolNames = toolsResult.tools.map((t: any) => t.name)
+
+      // Show all available tools
+      for (const tool of toolsResult.tools) {
+        const isRequired = requiredTools.includes(tool.name)
+        const marker = isRequired ? '✓' : ' '
+        channel.appendLine(`${marker} ${tool.name}`)
+        if (tool.description) {
+          channel.appendLine(`   ${tool.description}`)
+        }
+        channel.appendLine('')
+      }
+
+      // Check for missing required tools
+      const missingTools = requiredTools.filter(t => !availableToolNames.includes(t))
+      if (missingTools.length > 0) {
+        channel.appendLine('\n⚠️  Missing optional tools (advanced features may not work):')
+        for (const tool of missingTools) {
+          channel.appendLine(`   - ${tool}`)
+        }
+      } else {
+        channel.appendLine('\n✓ All required tools are available!')
+      }
+
+      vscode.window.showInformationMessage(`MCP server OK: ${toolsResult.tools.length} tools available`)
+    } else {
+      channel.appendLine('⚠️  No tools returned from MCP server')
+      channel.appendLine(`Raw response: ${JSON.stringify(toolsResult, null, 2)}`)
+      vscode.window.showWarningMessage('MCP server responded but returned no tools')
+    }
+  } catch (error) {
+    channel.appendLine(`\n❌ Error fetching tools: ${error}`)
+    channel.appendLine('\nThis could mean:')
+    channel.appendLine('1. MCP server crashed or failed to start')
+    channel.appendLine('2. Communication error between extension and server')
+    channel.appendLine('3. Check "Canvas Author MCP" output channel for server logs')
+    vscode.window.showErrorMessage(`MCP connection test failed: ${error}`)
   }
 }
 

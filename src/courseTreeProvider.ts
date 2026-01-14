@@ -46,6 +46,7 @@ export interface CourseRegistry {
 export class CourseTreeItem extends vscode.TreeItem {
   public externalUrl?: string  // For external URL module items
   public isSubheader?: boolean  // For subheader module items
+  public worktreeName?: string  // For items in a worktree
 
   constructor(
     public readonly label: string,
@@ -61,6 +62,11 @@ export class CourseTreeItem extends vscode.TreeItem {
     this.setIcon()
     this.setTooltip()
     this.setCommand()
+  }
+
+  public setWorktreeContext(worktreeName: string) {
+    this.worktreeName = worktreeName
+    this.contextValue = `${this.itemType}.inWorktree`
   }
 
   private setIcon() {
@@ -403,7 +409,7 @@ export class CourseTreeProvider implements vscode.TreeDataProvider<CourseTreeIte
 
   async getChildren(element?: CourseTreeItem): Promise<CourseTreeItem[]> {
     if (!element) {
-      // Root level: if single course, show categories directly; otherwise show courses
+      // Root level: show courses directly if multiple, or categories if single
       if (this.registry.courses.length === 1) {
         return this.getCourseCategories(this.registry.courses[0])
       }
@@ -597,6 +603,7 @@ export class CourseTreeProvider implements vscode.TreeDataProvider<CourseTreeIte
       )
       
       if (worktreeContext?.inWorktree) {
+        item.setWorktreeContext(worktreeContext.worktreeName)
         item.description = `$(git-branch) ${worktreeContext.worktreeName}`
       } else if (published !== null) {
         item.description = published ? '$(check) Published' : '$(circle-slash) Unpublished'

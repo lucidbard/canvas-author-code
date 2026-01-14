@@ -199,6 +199,11 @@
           "group": "navigation@1"
         },
         {
+          "command": "canvas-author.approveAndMergeWorktree",
+          "when": "view == canvasAuthorCourses && viewItem =~ /.*\\.inWorktree/",
+          "group": "worktree@1"
+        },
+        {
           "command": "canvas-author.openSettings",
           "when": "view == canvasAuthorCourses && viewItem == settings",
           "group": "navigation@1"
@@ -397,6 +402,11 @@
         "command": "canvas-author.importWorktreesFromFolder",
         "title": "Canvas: Import Worktrees from Folder",
         "icon": "$(folder-opened)"
+      },
+      {
+        "command": "canvas-author.testMcpConnection",
+        "title": "Canvas: Test MCP Connection",
+        "icon": "$(debug-disconnect)"
       }
     ],
     "configuration": {
