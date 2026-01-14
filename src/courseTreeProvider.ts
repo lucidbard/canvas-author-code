@@ -583,7 +583,11 @@ export class CourseTreeProvider implements vscode.TreeDataProvider<CourseTreeIte
       }
       
       // Check for review status (if not in worktree, check reviews on main)
-      if (!worktreeContext?.inWorktree) {
+      // Only if review workflow is enabled in settings
+      const config = vscode.workspace.getConfiguration('canvas-author')
+      const enableReviewWorkflow = config.get<boolean>('enableReviewWorkflow', false)
+
+      if (!worktreeContext?.inWorktree && enableReviewWorkflow) {
         const pageId = this.extractPageIdFromFrontmatter(file)
         if (pageId) {
           const reviewStatus = await this.getItemReviewStatus(`page:${pageId}`, coursePath)

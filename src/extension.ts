@@ -2807,8 +2807,31 @@ async function testMcpConnection() {
         for (const tool of missingTools) {
           channel.appendLine(`   - ${tool}`)
         }
+
+        // Check if review tools are missing
+        const reviewTools = ['get_item_review_history', 'approve_and_merge_worktree']
+        const missingReviewTools = reviewTools.filter(t => !availableToolNames.includes(t))
+        if (missingReviewTools.length > 0) {
+          const config = vscode.workspace.getConfiguration('canvas-author')
+          const reviewEnabled = config.get<boolean>('enableReviewWorkflow', false)
+
+          channel.appendLine('\nReview Workflow Status:')
+          if (reviewEnabled) {
+            channel.appendLine('   ⚠️  Review workflow is ENABLED but tools are missing')
+            channel.appendLine('   → Consider disabling: Settings → Canvas Author → Enable Review Workflow')
+          } else {
+            channel.appendLine('   ✓ Review workflow is disabled (recommended when tools unavailable)')
+          }
+        }
       } else {
         channel.appendLine('\n✓ All required tools are available!')
+
+        const config = vscode.workspace.getConfiguration('canvas-author')
+        const reviewEnabled = config.get<boolean>('enableReviewWorkflow', false)
+        channel.appendLine(`\nReview Workflow: ${reviewEnabled ? 'Enabled ✓' : 'Disabled'}`)
+        if (!reviewEnabled) {
+          channel.appendLine('   To enable: Settings → Canvas Author → Enable Review Workflow')
+        }
       }
 
       vscode.window.showInformationMessage(`MCP server OK: ${toolsResult.tools.length} tools available`)

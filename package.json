@@ -426,6 +426,11 @@
           "type": "string",
           "default": "",
           "description": "Default path for storing courses (defaults to ~/.canvas-author/courses)"
+        },
+        "canvas-author.enableReviewWorkflow": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable agent review workflow features (requires MCP server with review tools)"
         }
       }
     },
