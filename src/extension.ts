@@ -2813,7 +2813,7 @@ async function testMcpConnection() {
         const missingReviewTools = reviewTools.filter(t => !availableToolNames.includes(t))
         if (missingReviewTools.length > 0) {
           const config = vscode.workspace.getConfiguration('canvas-author')
-          const reviewEnabled = config.get<boolean>('enableReviewWorkflow', false)
+          const reviewEnabled = config.get<boolean>('enableReviewWorkflow', true)
 
           channel.appendLine('\nReview Workflow Status:')
           if (reviewEnabled) {
@@ -2827,7 +2827,7 @@ async function testMcpConnection() {
         channel.appendLine('\n✓ All required tools are available!')
 
         const config = vscode.workspace.getConfiguration('canvas-author')
-        const reviewEnabled = config.get<boolean>('enableReviewWorkflow', false)
+        const reviewEnabled = config.get<boolean>('enableReviewWorkflow', true)
         channel.appendLine(`\nReview Workflow: ${reviewEnabled ? 'Enabled ✓' : 'Disabled'}`)
         if (!reviewEnabled) {
           channel.appendLine('   To enable: Settings → Canvas Author → Enable Review Workflow')
