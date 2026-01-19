@@ -404,9 +404,24 @@
         "icon": "$(folder-opened)"
       },
       {
+        "command": "canvas-author.pushWorktreeBranches",
+        "title": "Canvas: Push Worktree Branches to Remote",
+        "icon": "$(cloud-upload)"
+      },
+      {
+        "command": "canvas-author.pullWorktreeBranches",
+        "title": "Canvas: Pull and Recreate Worktrees from Remote",
+        "icon": "$(cloud-download)"
+      },
+      {
         "command": "canvas-author.testMcpConnection",
         "title": "Canvas: Test MCP Connection",
         "icon": "$(debug-disconnect)"
+      },
+      {
+        "command": "canvas-author.openTeleprompter",
+        "title": "Canvas: Open Teleprompter",
+        "icon": "$(device-camera-video)"
       }
     ],
     "configuration": {

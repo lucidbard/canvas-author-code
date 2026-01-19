@@ -543,76 +543,200 @@ export class CourseTreeProvider implements vscode.TreeDataProvider<CourseTreeIte
 
   private async getPageItems(coursePath: string, course: CourseInfo): Promise<CourseTreeItem[]> {
     const items: CourseTreeItem[] = []
-    const seenPaths = new Set<string>()
+    const pageMap = new Map<string, { 
+      mainPath?: string, 
+      worktrees: Array<{ name: string, path: string }>,
+      title: string,
+      published: boolean | null
+    }>()
 
-    // Get git worktrees to exclude them
-    const worktreeNames = this.getGitWorktrees(coursePath)
-    const excludeDirs = ['quizzes', 'assignments', 'modules', 'rubrics', ...worktreeNames]
-
-    // Check if there's a pages subdirectory
-    const pagesDir = path.join(coursePath, 'pages')
-    let mdFiles: string[] = []
-
-    if (fs.existsSync(pagesDir)) {
-      // If pages/ subdirectory exists, use files from there
-      mdFiles = this.findFiles(pagesDir, '.md', [])
-        .filter(f => !f.endsWith('.quiz.md'))
-    } else {
-      // Otherwise, find .md files in root course directory only (not subdirectories)
-      // Exclude quizzes, assignments, modules, rubrics folders, git worktrees, and any .quiz.md files
-      mdFiles = this.findFiles(coursePath, '.md', excludeDirs)
-        .filter(f => !f.endsWith('.quiz.md') && path.dirname(f) === coursePath)
+    // Helper to get unique page key (prefer canvas_url, fallback to title, then filename)
+    const getPageKey = (fullPath: string): string => {
+      // Try to extract canvas page ID from frontmatter
+      const pageId = this.extractPageIdFromFrontmatter(fullPath)
+      if (pageId) {
+        return `id:${pageId}`
+      }
+      
+      // Try canvas_url from frontmatter
+      try {
+        const content = fs.readFileSync(fullPath, 'utf8')
+        const match = content.match(/^---\n([\s\S]*?)\n---/)
+        if (match) {
+          const yamlContent = match[1]
+          const urlMatch = yamlContent.match(/canvas_url:\s*(.+)/)
+          if (urlMatch) {
+            return `url:${urlMatch[1].trim()}`
+          }
+        }
+      } catch (e) {
+        // Ignore
+      }
+      
+      // Fallback to title
+      const title = this.extractTitleFromFrontmatter(fullPath)
+      if (title) {
+        return `title:${title}`
+      }
+      
+      // Last resort: filename
+      return `file:${path.basename(fullPath)}`
     }
 
-    for (const file of mdFiles) {
-      // Skip if we've already processed this file
-      if (seenPaths.has(file)) {
-        continue
-      }
-      seenPaths.add(file)
+    // Exclude certain directories but NOT .canvas-author (contains worktrees)
+    const excludeDirs = ['quizzes', 'assignments', 'modules', 'rubrics']
 
-      const fileName = path.basename(file, '.md')
-      const title = this.extractTitleFromFrontmatter(file) || fileName
-      let status = await this.getFileSyncStatus(file, course)
-      const published = this.extractPublishedStatus(file)
+    // First, scan main branch
+    const pagesDir = path.join(coursePath, 'pages')
+    if (fs.existsSync(pagesDir)) {
+      const mainFiles = this.findFiles(pagesDir, '.md', [])
+        .filter(f => !f.endsWith('.quiz.md'))
       
-      // Check for worktree context
-      const worktreeContext = this.getFileWorktreeContext(file, coursePath)
-      if (worktreeContext?.inWorktree) {
-        status = 'inWorktree'
+      for (const file of mainFiles) {
+        const pageKey = getPageKey(file)
+        const title = this.extractTitleFromFrontmatter(file) || path.basename(file, '.md')
+        const published = this.extractPublishedStatus(file)
+        
+        if (!pageMap.has(pageKey)) {
+          pageMap.set(pageKey, {
+            mainPath: file,
+            worktrees: [],
+            title,
+            published
+          })
+        }
       }
+    } else {
+      // Root-level pages in main
+      const mainFiles = this.findFiles(coursePath, '.md', excludeDirs)
+        .filter(f => !f.endsWith('.quiz.md') && path.dirname(f) === coursePath)
       
-      // Check for review status (if not in worktree, check reviews on main)
-      // Only if review workflow is enabled in settings
-      const config = vscode.workspace.getConfiguration('canvas-author')
-      const enableReviewWorkflow = config.get<boolean>('enableReviewWorkflow', true)
+      for (const file of mainFiles) {
+        const pageKey = getPageKey(file)
+        const title = this.extractTitleFromFrontmatter(file) || path.basename(file, '.md')
+        const published = this.extractPublishedStatus(file)
+        
+        if (!pageMap.has(pageKey)) {
+          pageMap.set(pageKey, {
+            mainPath: file,
+            worktrees: [],
+            title,
+            published
+          })
+        }
+      }
+    }
 
-      if (!worktreeContext?.inWorktree && enableReviewWorkflow) {
-        const pageId = this.extractPageIdFromFrontmatter(file)
-        if (pageId) {
-          const reviewStatus = await this.getItemReviewStatus(`page:${pageId}`, coursePath)
-          if (reviewStatus) {
-            status = reviewStatus
+    // Then scan worktrees
+    const worktreesDir = path.join(coursePath, '.canvas-author', 'worktrees')
+    if (fs.existsSync(worktreesDir)) {
+      const worktrees = fs.readdirSync(worktreesDir, { withFileTypes: true })
+        .filter(d => d.isDirectory())
+        .map(d => d.name)
+
+      for (const wtName of worktrees) {
+        const wtPath = path.join(worktreesDir, wtName)
+        let wtFiles: string[] = []
+        
+        const wtPagesDir = path.join(wtPath, 'pages')
+        if (fs.existsSync(wtPagesDir)) {
+          wtFiles = this.findFiles(wtPagesDir, '.md', [])
+            .filter(f => !f.endsWith('.quiz.md'))
+        } else {
+          wtFiles = this.findFiles(wtPath, '.md', excludeDirs)
+            .filter(f => !f.endsWith('.quiz.md') && path.dirname(f) === wtPath)
+        }
+
+        for (const file of wtFiles) {
+          const pageKey = getPageKey(file)
+          const title = this.extractTitleFromFrontmatter(file) || path.basename(file, '.md')
+          const published = this.extractPublishedStatus(file)
+          
+          if (!pageMap.has(pageKey)) {
+            pageMap.set(pageKey, {
+              worktrees: [],
+              title,
+              published
+            })
           }
+          
+          const entry = pageMap.get(pageKey)!
+          // Only add if not already in this worktree's list
+          if (!entry.worktrees.some(wt => wt.name === wtName)) {
+            entry.worktrees.push({ name: wtName, path: file })
+          }
+        }
+      }
+    }
+
+    // Build tree items from map
+    for (const [pageKey, info] of pageMap.entries()) {
+      let displayPath: string
+      let status: SyncStatus
+      let label = info.title
+      let description = ''
+      let modifiedWorktrees: Array<{ name: string, path: string }> = []
+      
+      // Filter worktrees to only those with actual modifications
+      if (info.worktrees.length > 0 && info.mainPath) {
+        const mainContent = fs.readFileSync(info.mainPath, 'utf8')
+        
+        for (const wt of info.worktrees) {
+          try {
+            const wtContent = fs.readFileSync(wt.path, 'utf8')
+            // Compare content - if different, it's been modified
+            if (mainContent !== wtContent) {
+              modifiedWorktrees.push(wt)
+            }
+          } catch (e) {
+            // If we can't read the worktree file, skip it
+          }
+        }
+      } else if (info.worktrees.length > 0 && !info.mainPath) {
+        // New pages (only in worktree) are always considered modified
+        modifiedWorktrees = info.worktrees
+      }
+      
+      if (modifiedWorktrees.length > 0) {
+        // Exists in worktree(s) with modifications
+        displayPath = modifiedWorktrees[0].path // Use first modified worktree version
+        status = 'inWorktree'
+        
+        if (!info.mainPath) {
+          // New page (only in worktree)
+          label = `+ ${info.title}`
+        }
+        
+        if (modifiedWorktrees.length === 1) {
+          description = modifiedWorktrees[0].name
+        } else {
+          description = `${modifiedWorktrees.length} worktrees`
+        }
+      } else {
+        // Only in main, or worktree versions are identical to main
+        displayPath = info.mainPath!
+        status = await this.getFileSyncStatus(displayPath, course)
+        
+        if (info.published !== null) {
+          description = info.published ? 'Published' : 'Unpublished'
         }
       }
       
       const item = new CourseTreeItem(
-        title,
+        label,
         vscode.TreeItemCollapsibleState.None,
         'page',
         course,
-        file,
+        displayPath,
         status
       )
       
-      if (worktreeContext?.inWorktree) {
-        item.setWorktreeContext(worktreeContext.worktreeName)
-        item.description = `$(git-branch) ${worktreeContext.worktreeName}`
-      } else if (published !== null) {
-        item.description = published ? '$(check) Published' : '$(circle-slash) Unpublished'
+      if (modifiedWorktrees.length > 0) {
+        item.setWorktreeContext(modifiedWorktrees[0].name)
+        item.iconPath = new vscode.ThemeIcon('git-branch', new vscode.ThemeColor('gitDecoration.modifiedResourceForeground'))
       }
       
+      item.description = description
       items.push(item)
     }
 
@@ -1072,21 +1196,21 @@ export class CourseTreeProvider implements vscode.TreeDataProvider<CourseTreeIte
   private getFileWorktreeContext(filePath: string, coursePath: string): { worktreeName: string; inWorktree: boolean } | null {
     /**
      * Check if a file is in a worktree and return the worktree name.
+     * Worktrees are now stored in .canvas-author/worktrees/
      */
     try {
       const relativePath = path.relative(coursePath, filePath)
       const pathParts = relativePath.split(path.sep)
       
-      if (pathParts.length === 0) {
+      if (pathParts.length < 3) {
         return null
       }
 
-      const firstPart = pathParts[0]
-      const worktrees = this.getGitWorktrees(coursePath)
-
-      if (worktrees.includes(firstPart)) {
+      // Check if path is .canvas-author/worktrees/{worktree-name}/...
+      if (pathParts[0] === '.canvas-author' && pathParts[1] === 'worktrees') {
+        const worktreeName = pathParts[2]
         return {
-          worktreeName: firstPart,
+          worktreeName: worktreeName,
           inWorktree: true
         }
       }

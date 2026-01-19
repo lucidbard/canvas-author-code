@@ -1,6 +1,7 @@
 import * as vscode from 'vscode'
 import * as path from 'path'
 import * as fs from 'fs'
+import * as child_process from 'child_process'
 import { CanvasMcpClient } from './mcpClient'
 import { CourseTreeProvider, CourseTreeItem, CourseInfo } from './courseTreeProvider'
 import { OnboardingPanel } from './onboardingPanel'
@@ -244,10 +245,82 @@ export async function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('canvas-author.editModules', (item?: CourseTreeItem) => editModules(item, context)),
     vscode.commands.registerCommand('canvas-author.approveAndMergeWorktree', (item?: CourseTreeItem) => approveAndMergeWorktree(item)),
     vscode.commands.registerCommand('canvas-author.importWorktreesFromFolder', () => importWorktreesFromFolder()),
+    vscode.commands.registerCommand('canvas-author.pushWorktreeBranches', () => pushWorktreeBranches()),
+    vscode.commands.registerCommand('canvas-author.pullWorktreeBranches', () => pullWorktreeBranches()),
     vscode.commands.registerCommand('canvas-author.testMcpConnection', () => testMcpConnection()),
 
     // Onboarding command
-    vscode.commands.registerCommand('canvas-author.showOnboarding', () => OnboardingPanel.createOrShow(context))
+    vscode.commands.registerCommand('canvas-author.showOnboarding', () => OnboardingPanel.createOrShow(context)),
+
+    // Teleprompter command - start websocket server and open in browser
+    vscode.commands.registerCommand('canvas-author.openTeleprompter', async (item?: CourseTreeItem) => {
+      const courseDir = getCoursePath(item)
+      if (!courseDir) {
+        vscode.window.showErrorMessage('No course directory found')
+        return
+      }
+
+      const courseMaterialsDir = path.join(courseDir, 'course-materials')
+      if (!fs.existsSync(courseMaterialsDir)) {
+        vscode.window.showErrorMessage('course-materials directory not found')
+        return
+      }
+
+      const serverScript = path.join(courseMaterialsDir, 'teleprompter-server.py')
+      if (!fs.existsSync(serverScript)) {
+        vscode.window.showErrorMessage('teleprompter-server.py not found in course-materials')
+        return
+      }
+
+      // Start Python websocket server (don't detach - we want to keep it attached)
+      const serverProcess = child_process.spawn('python3', [serverScript], {
+        cwd: courseMaterialsDir,
+        stdio: ['ignore', 'pipe', 'pipe']
+      })
+
+      // Log server output
+      serverProcess.stdout?.on('data', (data) => {
+        const output = data.toString()
+        console.log(`Teleprompter: ${output}`)
+        // Show important messages to user
+        if (output.includes('All systems ready') || output.includes('WebSocket server')) {
+          vscode.window.showInformationMessage('Teleprompter server ready with live reload')
+        }
+      })
+
+      serverProcess.stderr?.on('data', (data) => {
+        console.error(`Teleprompter error: ${data}`)
+      })
+
+      serverProcess.on('error', (err) => {
+        vscode.window.showErrorMessage(`Teleprompter server failed to start: ${err.message}`)
+      })
+
+      serverProcess.on('exit', (code) => {
+        if (code !== null && code !== 0) {
+          vscode.window.showWarningMessage(`Teleprompter server exited with code ${code}`)
+        }
+      })
+
+      // Wait a moment for server to start
+      await new Promise(resolve => setTimeout(resolve, 1500))
+
+      // Open in browser
+      const url = 'http://localhost:8000/teleprompter.html'
+      vscode.env.openExternal(vscode.Uri.parse(url))
+
+      vscode.window.showInformationMessage('Teleprompter server started with live reload on http://localhost:8000')
+
+      // Store process for cleanup
+      context.subscriptions.push({
+        dispose: () => {
+          if (serverProcess && !serverProcess.killed) {
+            serverProcess.kill('SIGTERM')
+            console.log('Teleprompter server stopped')
+          }
+        }
+      })
+    })
   )
 
   // Show status bar item when in a Canvas course directory
@@ -2609,54 +2682,60 @@ async function approveAndMergeWorktree(item?: CourseTreeItem) {
 
 async function importWorktreesFromFolder() {
   /**
-   * Import/attach existing worktree directories into a repository.
-   * Prompts for repo root and external worktrees folder (default: ~/dig4503-worktrees).
+   * Scan local .canvas-author/worktrees/ directory and attach any worktrees found.
+   * Worktrees created by agents are stored here (gitignored).
    */
-  // Pick repository root
-  const repoUri = await vscode.window.showOpenDialog({
-    canSelectFiles: false,
-    canSelectFolders: true,
-    canSelectMany: false,
-    openLabel: 'Select Repository Root'
-  })
-
-  if (!repoUri || repoUri.length === 0) {
-    return
+  const { execSync } = require('child_process')
+  
+  // Try to detect current workspace as repo root
+  let repoRoot: string | undefined
+  if (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0) {
+    const wsFolder = vscode.workspace.workspaceFolders[0].uri.fsPath
+    if (fs.existsSync(path.join(wsFolder, '.git'))) {
+      repoRoot = wsFolder
+    }
   }
 
-  const repoRoot = repoUri[0].fsPath
-
-  // Pick external worktrees folder (offer default)
-  const defaultWorktreesPath = require('os').homedir() + '/dig4503-worktrees'
-  const worktreesChoice = await vscode.window.showQuickPick([
-    { label: defaultWorktreesPath, description: 'Default from prompt', value: defaultWorktreesPath },
-    { label: 'Choose folder…', description: 'Pick a different directory', value: 'choose' }
-  ], { placeHolder: 'Select external worktrees folder' })
-
-  if (!worktreesChoice) { return }
-
-  let worktreesRoot = worktreesChoice.value
-  if (worktreesChoice.value === 'choose') {
-    const wtUri = await vscode.window.showOpenDialog({
+  // If no workspace repo found, ask user to select
+  if (!repoRoot) {
+    const repoUri = await vscode.window.showOpenDialog({
       canSelectFiles: false,
       canSelectFolders: true,
       canSelectMany: false,
-      openLabel: 'Select Worktrees Folder'
+      openLabel: 'Select Repository Root'
     })
-    if (!wtUri || wtUri.length === 0) { return }
-    worktreesRoot = wtUri[0].fsPath
+
+    if (!repoUri || repoUri.length === 0) {
+      return
+    }
+
+    repoRoot = repoUri[0].fsPath
   }
 
+  // Validate that it's a git repository
+  if (!fs.existsSync(path.join(repoRoot, '.git'))) {
+    vscode.window.showErrorMessage(`Selected folder is not a git repository: ${repoRoot}`)
+    return
+  }
+
+  // Check for local worktrees directory
+  const worktreesRoot = path.join(repoRoot, '.canvas-author', 'worktrees')
   if (!fs.existsSync(worktreesRoot)) {
-    vscode.window.showErrorMessage(`Worktrees folder not found: ${worktreesRoot}`)
+    vscode.window.showInformationMessage(`No .canvas-author/worktrees directory found in ${repoRoot}`)
     return
   }
 
   try {
-    const { execSync } = require('child_process')
-
     // Current registered worktrees
-    const listOut = execSync('git worktree list --porcelain', { cwd: repoRoot, encoding: 'utf8' })
+    let listOut: string
+    try {
+      listOut = execSync('git worktree list --porcelain', { cwd: repoRoot, encoding: 'utf8' })
+    } catch (gitError) {
+      const msg = gitError instanceof Error ? gitError.message : String(gitError)
+      vscode.window.showErrorMessage(`Failed to list git worktrees in ${repoRoot}: ${msg}`)
+      return
+    }
+    
     const registeredPaths = new Set<string>()
     for (const line of listOut.split('\n')) {
       if (line.startsWith('worktree ')) {
@@ -2664,7 +2743,7 @@ async function importWorktreesFromFolder() {
       }
     }
 
-    // Iterate subdirectories under external root
+    // Iterate subdirectories under .canvas-author/worktrees/
     const entries = fs.readdirSync(worktreesRoot, { withFileTypes: true })
     const attached: string[] = []
     const already: string[] = []
@@ -2685,7 +2764,6 @@ async function importWorktreesFromFolder() {
       let branch: string | undefined
       try {
         const headFilePath = path.join(wtPath, '.git', 'HEAD')
-        const headFileContentPath = path.join(wtPath, '.git')
         if (fs.existsSync(headFilePath)) {
           const head = fs.readFileSync(headFilePath, 'utf8').trim()
           const m = head.match(/^ref:\s*refs\/heads\/(.+)$/)
@@ -2714,10 +2792,10 @@ async function importWorktreesFromFolder() {
       // Attach as worktree to repo
       try {
         execSync(`git worktree add --force "${wtPath}" "${branch}"`, { cwd: repoRoot, stdio: 'pipe' })
-        attached.push(`${wtPath} ← ${branch}`)
+        attached.push(`${ent.name} ← ${branch}`)
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e)
-        errors.push(`${wtPath}: ${msg}`)
+        errors.push(`${ent.name}: ${msg}`)
       }
     }
 
@@ -2733,10 +2811,264 @@ async function importWorktreesFromFolder() {
     channel.clear()
     channel.appendLine('Import Worktrees Report')
     channel.appendLine('=======================')
+    channel.appendLine(`Repository: ${repoRoot}`)
+    channel.appendLine(`Local worktrees directory: ${worktreesRoot}`)
+    channel.appendLine('')
     channel.appendLine(lines.join('\n\n'))
     channel.show()
   } catch (error) {
-    vscode.window.showErrorMessage(`Failed to import worktrees: ${error}`)
+    const msg = error instanceof Error ? error.message : String(error)
+    vscode.window.showErrorMessage(`Failed to import worktrees: ${msg}`)
+  }
+}
+
+async function pushWorktreeBranches() {
+  /**
+   * Push all worktree branches to remote so they can be pulled on another computer.
+   */
+  const { execSync } = require('child_process')
+  
+  // Try to detect current workspace as repo root
+  let repoRoot: string | undefined
+  if (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0) {
+    const wsFolder = vscode.workspace.workspaceFolders[0].uri.fsPath
+    if (fs.existsSync(path.join(wsFolder, '.git'))) {
+      repoRoot = wsFolder
+    }
+  }
+
+  if (!repoRoot) {
+    const repoUri = await vscode.window.showOpenDialog({
+      canSelectFiles: false,
+      canSelectFolders: true,
+      canSelectMany: false,
+      openLabel: 'Select Repository Root'
+    })
+
+    if (!repoUri || repoUri.length === 0) {
+      return
+    }
+
+    repoRoot = repoUri[0].fsPath
+  }
+
+  if (!fs.existsSync(path.join(repoRoot, '.git'))) {
+    vscode.window.showErrorMessage(`Selected folder is not a git repository: ${repoRoot}`)
+    return
+  }
+
+  try {
+    // Get all worktrees and their branches
+    const listOut = execSync('git worktree list --porcelain', { cwd: repoRoot, encoding: 'utf8' })
+    const worktrees: Array<{ path: string, branch: string }> = []
+    
+    let currentWorktree: any = {}
+    for (const line of listOut.split('\n')) {
+      if (line.startsWith('worktree ')) {
+        if (currentWorktree.path) {
+          worktrees.push(currentWorktree)
+        }
+        currentWorktree = { path: line.substring(9).trim() }
+      } else if (line.startsWith('branch ')) {
+        currentWorktree.branch = line.substring(7).trim().replace('refs/heads/', '')
+      }
+    }
+    if (currentWorktree.path) {
+      worktrees.push(currentWorktree)
+    }
+
+    // Filter to only worktrees (not main)
+    const worktreeBranches = worktrees
+      .filter(wt => wt.branch && wt.branch !== 'main' && wt.branch !== 'master')
+      .map(wt => wt.branch)
+
+    if (worktreeBranches.length === 0) {
+      vscode.window.showInformationMessage('No worktree branches to push')
+      return
+    }
+
+    // Show confirmation
+    const confirm = await vscode.window.showInformationMessage(
+      `Push ${worktreeBranches.length} worktree branch(es) to remote?\n${worktreeBranches.join(', ')}`,
+      'Push',
+      'Cancel'
+    )
+
+    if (confirm !== 'Push') {
+      return
+    }
+
+    // Push each branch
+    const pushed: string[] = []
+    const errors: string[] = []
+
+    for (const branch of worktreeBranches) {
+      try {
+        execSync(`git push origin ${branch}`, { cwd: repoRoot, stdio: 'pipe' })
+        pushed.push(branch)
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e)
+        errors.push(`${branch}: ${msg}`)
+      }
+    }
+
+    const channel = vscode.window.createOutputChannel('Canvas Author')
+    channel.clear()
+    channel.appendLine('Push Worktree Branches')
+    channel.appendLine('=====================')
+    channel.appendLine(`Repository: ${repoRoot}`)
+    channel.appendLine('')
+    if (pushed.length) {
+      channel.appendLine(`Pushed ${pushed.length} branches:`)
+      pushed.forEach(b => channel.appendLine(`  ✓ ${b}`))
+    }
+    if (errors.length) {
+      channel.appendLine('')
+      channel.appendLine(`Errors (${errors.length}):`)
+      errors.forEach(e => channel.appendLine(`  ✗ ${e}`))
+    }
+    channel.show()
+
+    vscode.window.showInformationMessage(`Pushed ${pushed.length} worktree branch(es) to remote`)
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error)
+    vscode.window.showErrorMessage(`Failed to push worktree branches: ${msg}`)
+  }
+}
+
+async function pullWorktreeBranches() {
+  /**
+   * Pull worktree branches from remote and recreate them as local worktrees.
+   */
+  const { execSync } = require('child_process')
+  
+  // Try to detect current workspace as repo root
+  let repoRoot: string | undefined
+  if (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0) {
+    const wsFolder = vscode.workspace.workspaceFolders[0].uri.fsPath
+    if (fs.existsSync(path.join(wsFolder, '.git'))) {
+      repoRoot = wsFolder
+    }
+  }
+
+  if (!repoRoot) {
+    const repoUri = await vscode.window.showOpenDialog({
+      canSelectFiles: false,
+      canSelectFolders: true,
+      canSelectMany: false,
+      openLabel: 'Select Repository Root'
+    })
+
+    if (!repoUri || repoUri.length === 0) {
+      return
+    }
+
+    repoRoot = repoUri[0].fsPath
+  }
+
+  if (!fs.existsSync(path.join(repoRoot, '.git'))) {
+    vscode.window.showErrorMessage(`Selected folder is not a git repository: ${repoRoot}`)
+    return
+  }
+
+  try {
+    // Fetch from remote
+    vscode.window.showInformationMessage('Fetching from remote...')
+    execSync('git fetch origin', { cwd: repoRoot, stdio: 'pipe' })
+
+    // Get remote branches
+    const remoteBranchesOut = execSync('git branch -r', { cwd: repoRoot, encoding: 'utf8' })
+    const remoteBranches = remoteBranchesOut
+      .split('\n')
+      .map((b: string) => b.trim())
+      .filter((b: string) => b.startsWith('origin/') && !b.includes('HEAD') && !b.endsWith('/main') && !b.endsWith('/master'))
+      .map((b: string) => b.replace('origin/', ''))
+
+    if (remoteBranches.length === 0) {
+      vscode.window.showInformationMessage('No remote worktree branches found')
+      return
+    }
+
+    // Get existing local worktrees
+    const listOut = execSync('git worktree list --porcelain', { cwd: repoRoot, encoding: 'utf8' })
+    const existingBranches = new Set<string>()
+    for (const line of listOut.split('\n')) {
+      if (line.startsWith('branch ')) {
+        const branch = line.substring(7).trim().replace('refs/heads/', '')
+        existingBranches.add(branch)
+      }
+    }
+
+    // Filter to branches not already checked out
+    const branchesToPull = remoteBranches.filter((b: string) => !existingBranches.has(b))
+
+    if (branchesToPull.length === 0) {
+      vscode.window.showInformationMessage('All remote worktree branches are already checked out')
+      return
+    }
+
+    // Show selection
+    const selectedBranches = await vscode.window.showQuickPick(branchesToPull, {
+      canPickMany: true,
+      placeHolder: 'Select branches to recreate as local worktrees'
+    })
+
+    if (!selectedBranches || selectedBranches.length === 0) {
+      return
+    }
+
+    // Create worktrees
+    const worktreesDir = path.join(repoRoot, '.canvas-author', 'worktrees')
+    fs.mkdirSync(worktreesDir, { recursive: true })
+
+    const created: string[] = []
+    const errors: string[] = []
+
+    for (const branch of selectedBranches) {
+      const wtPath = path.join(worktreesDir, branch)
+      
+      try {
+        // Create local branch tracking remote
+        try {
+          execSync(`git branch ${branch} origin/${branch}`, { cwd: repoRoot, stdio: 'pipe' })
+        } catch (e) {
+          // Branch might already exist locally, that's ok
+        }
+
+        // Create worktree
+        execSync(`git worktree add "${wtPath}" ${branch}`, { cwd: repoRoot, stdio: 'pipe' })
+        created.push(branch)
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e)
+        errors.push(`${branch}: ${msg}`)
+      }
+    }
+
+    const channel = vscode.window.createOutputChannel('Canvas Author')
+    channel.clear()
+    channel.appendLine('Pull Worktree Branches')
+    channel.appendLine('=====================')
+    channel.appendLine(`Repository: ${repoRoot}`)
+    channel.appendLine(`Worktrees directory: ${worktreesDir}`)
+    channel.appendLine('')
+    if (created.length) {
+      channel.appendLine(`Created ${created.length} worktrees:`)
+      created.forEach(b => channel.appendLine(`  ✓ ${b}`))
+    }
+    if (errors.length) {
+      channel.appendLine('')
+      channel.appendLine(`Errors (${errors.length}):`)
+      errors.forEach(e => channel.appendLine(`  ✗ ${e}`))
+    }
+    channel.show()
+
+    vscode.window.showInformationMessage(`Created ${created.length} worktree(s)`)
+    
+    // Refresh the tree
+    vscode.commands.executeCommand('canvas-author.refreshCourses')
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error)
+    vscode.window.showErrorMessage(`Failed to pull worktree branches: ${msg}`)
   }
 }
 
