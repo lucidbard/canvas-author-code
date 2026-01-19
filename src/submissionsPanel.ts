@@ -329,11 +329,14 @@ export class SubmissionsPanel implements vscode.WebviewViewProvider {
       return
     }
 
+    // Show loading state
+    webview.html = this._getLoadingHtml(this._currentCourse.courseName)
+
     try {
       this._outputChannel.appendLine('Calling MCP tool: get_all_submissions_hierarchical')
       this._outputChannel.appendLine(`  course_id: ${this._currentCourse.courseId}`)
 
-      // Fetch all submissions hierarchically
+      // Fetch all submissions hierarchically (this will use cache if available, then update)
       const result = await this._mcpClient.callTool('get_all_submissions_hierarchical', {
         course_id: this._currentCourse.courseId,
         include_user: true,
@@ -362,6 +365,49 @@ export class SubmissionsPanel implements vscode.WebviewViewProvider {
       }
       webview.html = this._getErrorHtml(`Failed to load submissions: ${error}`)
     }
+  }
+
+  private _getLoadingHtml(courseName: string): string {
+    return `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Loading Submissions</title>
+    <style>
+        body {
+            font-family: var(--vscode-font-family);
+            padding: 20px;
+            color: var(--vscode-foreground);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+        }
+        .spinner {
+            border: 3px solid var(--vscode-editor-inactiveSelectionBackground);
+            border-top: 3px solid var(--vscode-button-background);
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin-bottom: 16px;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        .loading-text {
+            color: var(--vscode-descriptionForeground);
+        }
+    </style>
+</head>
+<body>
+    <div class="spinner"></div>
+    <div class="loading-text">Loading submissions for ${courseName}...</div>
+</body>
+</html>`
   }
 
   private _getWelcomeHtml(): string {
