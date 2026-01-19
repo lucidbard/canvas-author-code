@@ -154,11 +154,12 @@ export class SubmissionsPanel implements vscode.WebviewViewProvider {
     }
 
     try {
-      // Fetch the full submission details
+      // Fetch the full submission details (anonymize=false for local viewing)
       const result = await this._mcpClient.callTool('get_submission', {
         course_id: courseId,
         assignment_id: assignmentId,
-        user_id: userId
+        user_id: userId,
+        anonymize: false
       })
 
       this._outputChannel.appendLine(`Submission data: ${JSON.stringify(result, null, 2).substring(0, 500)}`)
