@@ -107,7 +107,7 @@ export class SubmissionsPanel implements vscode.WebviewViewProvider {
       async (message) => {
         switch (message.command) {
           case 'openSubmission':
-            await this.openSubmissionForGrading(message.submissionId)
+            await this.openSubmissionForViewing(message.courseId, message.assignmentId, message.userId)
             break
           case 'submitGrade':
             await this.submitGrade(message.assignmentId, message.userId, message.grade, message.comment)
@@ -145,15 +145,94 @@ export class SubmissionsPanel implements vscode.WebviewViewProvider {
     }
   }
 
-  private async openSubmissionForGrading(userId: string) {
-    if (!this._currentAssignment) {
+  private async openSubmissionForViewing(courseId: string, assignmentId: string, userId: string) {
+    this._outputChannel.appendLine(`Opening submission: course=${courseId}, assignment=${assignmentId}, user=${userId}`)
+
+    if (!this._mcpClient) {
+      vscode.window.showErrorMessage('Canvas connection not available')
       return
     }
 
-    vscode.window.showInformationMessage(`Opening submission for grading: User ${userId}`)
-    
-    // TODO: Download and show submission content
-    // This would fetch the submission text, attachments, etc.
+    try {
+      // Fetch the full submission details
+      const result = await this._mcpClient.callTool('get_submission', {
+        course_id: courseId,
+        assignment_id: assignmentId,
+        user_id: userId
+      })
+
+      this._outputChannel.appendLine(`Submission data: ${JSON.stringify(result, null, 2).substring(0, 500)}`)
+
+      // Create a new document to display the submission
+      const submission = result as any
+      let content = ''
+
+      // Build the submission content
+      content += `# Submission for Assignment ${assignmentId}\n\n`
+      content += `**Student:** ${submission.user?.name || `User ${userId}`}\n`
+      content += `**Submitted:** ${submission.submitted_at ? new Date(submission.submitted_at).toLocaleString() : 'Not submitted'}\n`
+      content += `**Score:** ${submission.score !== undefined ? submission.score : '—'} / ${submission.assignment?.points_possible || '?'}\n`
+      content += `**Grade:** ${submission.grade || '—'}\n`
+      content += `**Status:** ${submission.workflow_state}\n`
+      if (submission.late) {
+        content += `**⚠️ LATE SUBMISSION**\n`
+      }
+      content += `\n---\n\n`
+
+      // Add submission body/content
+      if (submission.body) {
+        content += `## Submission Content\n\n${submission.body}\n\n`
+      }
+
+      // Add attachments
+      if (submission.attachments && submission.attachments.length > 0) {
+        content += `## Attachments\n\n`
+        for (const att of submission.attachments) {
+          content += `- [${att.filename}](${att.url})\n`
+        }
+        content += `\n`
+      }
+
+      // Add submission comments
+      if (submission.submission_comments && submission.submission_comments.length > 0) {
+        content += `## Comments\n\n`
+        for (const comment of submission.submission_comments) {
+          content += `**${comment.author_name}** (${new Date(comment.created_at).toLocaleString()}):\n`
+          content += `${comment.comment}\n\n`
+        }
+      }
+
+      // Add quiz submission data if available
+      if (submission.submission_type === 'online_quiz' && submission.quiz_submission) {
+        content += `## Quiz Submission\n\n`
+        content += `**Attempt:** ${submission.quiz_submission.attempt || 1}\n`
+        content += `**Time Spent:** ${submission.quiz_submission.time_spent ? `${submission.quiz_submission.time_spent} seconds` : 'N/A'}\n\n`
+
+        // If we have quiz answers, display them
+        if (submission.quiz_submission.questions) {
+          content += `### Answers\n\n`
+          for (const q of submission.quiz_submission.questions) {
+            content += `**Q${q.position}: ${q.question_name || q.question_text}**\n`
+            content += `Answer: ${q.answer || 'No answer'}\n`
+            if (q.correct !== undefined) {
+              content += q.correct ? `✓ Correct\n` : `✗ Incorrect\n`
+            }
+            content += `\n`
+          }
+        }
+      }
+
+      // Create and show the document
+      const doc = await vscode.workspace.openTextDocument({
+        content,
+        language: 'markdown'
+      })
+      await vscode.window.showTextDocument(doc, { preview: true })
+
+    } catch (error) {
+      this._outputChannel.appendLine(`ERROR opening submission: ${error}`)
+      vscode.window.showErrorMessage(`Failed to open submission: ${error}`)
+    }
   }
 
   private async submitGrade(assignmentId: string, userId: string, grade: string, comment: string) {
@@ -875,6 +954,40 @@ export class SubmissionsPanel implements vscode.WebviewViewProvider {
             padding: 40px 20px;
             color: var(--vscode-descriptionForeground);
         }
+
+        .submission-actions {
+            display: flex;
+            gap: 6px;
+            margin-left: 12px;
+        }
+
+        .action-button {
+            padding: 4px 10px;
+            border: none;
+            border-radius: 3px;
+            cursor: pointer;
+            font-size: 11px;
+            font-weight: 500;
+            transition: background-color 0.1s;
+        }
+
+        .view-button {
+            background-color: var(--vscode-button-secondaryBackground);
+            color: var(--vscode-button-secondaryForeground);
+        }
+
+        .view-button:hover {
+            background-color: var(--vscode-button-secondaryHoverBackground);
+        }
+
+        .action-button.grade-button {
+            background-color: var(--vscode-button-background);
+            color: var(--vscode-button-foreground);
+        }
+
+        .action-button.grade-button:hover {
+            background-color: var(--vscode-button-hoverBackground);
+        }
     </style>
     <script>
         const vscode = acquireVsCodeApi();
@@ -907,6 +1020,15 @@ export class SubmissionsPanel implements vscode.WebviewViewProvider {
             gradeInput.value = '';
             commentInput.value = '';
             toggleGradeForm(assignmentId, userId);
+        }
+
+        function viewSubmission(courseId, assignmentId, userId) {
+            vscode.postMessage({
+                command: 'openSubmission',
+                courseId: courseId,
+                assignmentId: assignmentId,
+                userId: userId
+            });
         }
     </script>
 </head>
@@ -972,7 +1094,7 @@ export class SubmissionsPanel implements vscode.WebviewViewProvider {
                         const userId = sub.user?.id || sub.user_id
                         return `
                         <div class="submission">
-                            <div class="submission-content" onclick="toggleGradeForm('${assignment.id}', '${userId}')">
+                            <div class="submission-content">
                                 <div class="submission-user">
                                     <div class="user-name">${userName}</div>
                                     ${sub.submitted_at && sub.submitted_at !== 'None' ? `<div class="submission-time">${new Date(sub.submitted_at).toLocaleString()}</div>` : ''}
@@ -985,6 +1107,10 @@ export class SubmissionsPanel implements vscode.WebviewViewProvider {
                                     <div class="grade-value">${sub.grade || sub.score || '—'}</div>
                                 </div>
                                 ` : ''}
+                                <div class="submission-actions">
+                                    <button class="action-button view-button" onclick="viewSubmission('${this._currentCourse?.courseId}', '${assignment.id}', '${userId}'); event.stopPropagation();">View</button>
+                                    <button class="action-button grade-button" onclick="toggleGradeForm('${assignment.id}', '${userId}'); event.stopPropagation();">Grade</button>
+                                </div>
                             </div>
                             <div class="grade-input-container" id="grade-form-${assignment.id}-${userId}">
                                 <div class="grade-form">
