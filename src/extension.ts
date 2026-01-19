@@ -186,7 +186,11 @@ export async function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(treeView)
 
   // Register submissions panel
-  submissionsPanel = new SubmissionsPanel(context.extensionUri, context)
+  submissionsPanel = new SubmissionsPanel(
+    context.extensionUri,
+    context,
+    () => courseTreeProvider.getAllCourses().map(c => ({ id: c.id, name: c.name }))
+  )
   submissionsPanel.setMcpClient(mcpClient)
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider('canvasAuthorSubmissions', submissionsPanel)

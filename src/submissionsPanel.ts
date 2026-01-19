@@ -40,11 +40,17 @@ export class SubmissionsPanel implements vscode.WebviewViewProvider {
   private _currentCourse?: { courseId: string; courseName: string }
   private _viewMode: 'single' | 'hierarchical' = 'hierarchical'
   private _mcpClient?: CanvasMcpClient
+  private _outputChannel: vscode.OutputChannel
+  private _getCourses?: () => Array<{ id: string; name: string }>
 
   constructor(
     private readonly _extensionUri: vscode.Uri,
-    private readonly _context: vscode.ExtensionContext
-  ) {}
+    private readonly _context: vscode.ExtensionContext,
+    getCourses?: () => Array<{ id: string; name: string }>
+  ) {
+    this._outputChannel = vscode.window.createOutputChannel('Canvas Author - Submissions')
+    this._getCourses = getCourses
+  }
 
   public setMcpClient(client: CanvasMcpClient | undefined) {
     this._mcpClient = client
@@ -59,10 +65,15 @@ export class SubmissionsPanel implements vscode.WebviewViewProvider {
   }
 
   public async showAllSubmissions(courseId: string, courseName: string) {
+    this._outputChannel.appendLine(`showAllSubmissions called: courseId=${courseId}, courseName=${courseName}`)
+    this._outputChannel.appendLine(`View exists: ${!!this._view}`)
     this._currentCourse = { courseId, courseName }
     this._viewMode = 'hierarchical'
     if (this._view) {
+      this._outputChannel.appendLine('Calling _updateHierarchical...')
       await this._updateHierarchical()
+    } else {
+      this._outputChannel.appendLine('View not ready yet, will update when resolveWebviewView is called')
     }
   }
 
@@ -79,6 +90,11 @@ export class SubmissionsPanel implements vscode.WebviewViewProvider {
     context: vscode.WebviewViewResolveContext,
     _token: vscode.CancellationToken
   ) {
+    this._outputChannel.appendLine('resolveWebviewView called')
+    this._outputChannel.appendLine(`View mode: ${this._viewMode}`)
+    this._outputChannel.appendLine(`Current course: ${this._currentCourse ? JSON.stringify(this._currentCourse) : 'none'}`)
+    this._outputChannel.appendLine(`Current assignment: ${this._currentAssignment ? JSON.stringify(this._currentAssignment) : 'none'}`)
+
     this._view = webviewView
 
     webviewView.webview.options = {
@@ -106,10 +122,25 @@ export class SubmissionsPanel implements vscode.WebviewViewProvider {
     )
 
     if (this._viewMode === 'hierarchical' && this._currentCourse) {
+      this._outputChannel.appendLine('Triggering hierarchical update from resolveWebviewView')
       this._updateHierarchical()
     } else if (this._currentAssignment) {
+      this._outputChannel.appendLine('Triggering single assignment update from resolveWebviewView')
       this._update()
     } else {
+      // Auto-load single course if available
+      if (this._getCourses) {
+        const courses = this._getCourses()
+        this._outputChannel.appendLine(`Found ${courses.length} courses`)
+        if (courses.length === 1) {
+          this._outputChannel.appendLine(`Auto-loading single course: ${courses[0].name}`)
+          this._currentCourse = { courseId: courses[0].id, courseName: courses[0].name }
+          this._viewMode = 'hierarchical'
+          this._updateHierarchical()
+          return
+        }
+      }
+      this._outputChannel.appendLine('Showing welcome HTML (no pending data)')
       webviewView.webview.html = this._getWelcomeHtml()
     }
   }
@@ -202,18 +233,27 @@ export class SubmissionsPanel implements vscode.WebviewViewProvider {
   }
 
   private async _updateHierarchical() {
+    this._outputChannel.appendLine('_updateHierarchical called')
+    this._outputChannel.appendLine(`View exists: ${!!this._view}`)
+    this._outputChannel.appendLine(`Current course: ${this._currentCourse ? JSON.stringify(this._currentCourse) : 'none'}`)
+
     if (!this._view || !this._currentCourse) {
+      this._outputChannel.appendLine('Exiting early: view or currentCourse not set')
       return
     }
 
     const webview = this._view.webview
 
     if (!this._mcpClient) {
+      this._outputChannel.appendLine('ERROR: MCP client not available')
       webview.html = this._getErrorHtml('Canvas connection not available')
       return
     }
 
     try {
+      this._outputChannel.appendLine('Calling MCP tool: get_all_submissions_hierarchical')
+      this._outputChannel.appendLine(`  course_id: ${this._currentCourse.courseId}`)
+
       // Fetch all submissions hierarchically
       const result = await this._mcpClient.callTool('get_all_submissions_hierarchical', {
         course_id: this._currentCourse.courseId,
@@ -221,9 +261,26 @@ export class SubmissionsPanel implements vscode.WebviewViewProvider {
         include_rubric: false
       })
 
+      this._outputChannel.appendLine(`MCP call succeeded, result type: ${typeof result}`)
+      this._outputChannel.appendLine(`Result is array: ${Array.isArray(result)}`)
+      if (Array.isArray(result)) {
+        this._outputChannel.appendLine(`Result length: ${result.length}`)
+        if (result.length > 0) {
+          this._outputChannel.appendLine(`First assignment: ${JSON.stringify(result[0], null, 2).substring(0, 500)}`)
+        }
+      } else {
+        this._outputChannel.appendLine(`Result: ${JSON.stringify(result, null, 2).substring(0, 500)}`)
+      }
+
       const assignments: AssignmentWithSubmissions[] = Array.isArray(result) ? result : []
+      this._outputChannel.appendLine(`Rendering HTML with ${assignments.length} assignments`)
       webview.html = this._getHierarchicalSubmissionsHtml(assignments, this._currentCourse.courseName)
+      this._outputChannel.appendLine('HTML rendering complete')
     } catch (error) {
+      this._outputChannel.appendLine(`ERROR in _updateHierarchical: ${error}`)
+      if (error instanceof Error) {
+        this._outputChannel.appendLine(`Error stack: ${error.stack}`)
+      }
       webview.html = this._getErrorHtml(`Failed to load submissions: ${error}`)
     }
   }
