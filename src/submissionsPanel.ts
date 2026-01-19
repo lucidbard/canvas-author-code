@@ -617,8 +617,8 @@ export class SubmissionsPanel implements vscode.WebviewViewProvider {
 
   private _getHierarchicalSubmissionsHtml(assignments: AssignmentWithSubmissions[], courseName: string): string {
     const totalAssignments = assignments.length
-    const totalSubmissions = assignments.reduce((sum, a) => sum + a.submission_counts.submitted, 0)
-    const totalNeedsGrading = assignments.reduce((sum, a) => sum + a.submission_counts.needs_grading, 0)
+    const totalSubmissions = assignments.reduce((sum, a) => sum + (a.submission_counts?.submitted || 0), 0)
+    const totalNeedsGrading = assignments.reduce((sum, a) => sum + (a.submission_counts?.needs_grading || 0), 0)
 
     return `<!DOCTYPE html>
 <html lang="en">
@@ -935,7 +935,7 @@ export class SubmissionsPanel implements vscode.WebviewViewProvider {
                 <p>No assignments with submissions</p>
             </div>
         ` : assignments.map(assignment => {
-            const counts = assignment.submission_counts
+            const counts = assignment.submission_counts || { submitted: 0, graded: 0, needs_grading: 0, total: 0, not_submitted: 0, pending_review: 0, late: 0, missing: 0 }
             return `
             <div class="assignment-container">
                 <div class="assignment-header" onclick="toggleAssignment('${assignment.id}')">
