@@ -238,6 +238,7 @@ export async function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('canvas-author.openSettings', (item?: CourseTreeItem) => openSettings(item)),
     vscode.commands.registerCommand('canvas-author.openAssignment', (item?: CourseTreeItem) => openAssignment(item, context)),
     vscode.commands.registerCommand('canvas-author.deleteAssignment', (item?: CourseTreeItem) => deleteAssignment(item)),
+    vscode.commands.registerCommand('canvas-author.showAllSubmissions', (item?: CourseTreeItem) => showAllSubmissions(item)),
     vscode.commands.registerCommand('canvas-author.deletePage', (item?: CourseTreeItem) => deletePage(item)),
     vscode.commands.registerCommand('canvas-author.previewRubric', () => previewRubric(context)),
     vscode.commands.registerCommand('canvas-author.previewQuiz', (item?: CourseTreeItem) => previewQuiz(item, context)),
@@ -1166,6 +1167,24 @@ async function openAssignment(item?: CourseTreeItem, context?: vscode.ExtensionC
       }
     }
   }
+}
+
+async function showAllSubmissions(item?: CourseTreeItem) {
+  if (!item || !item.courseInfo) {
+    vscode.window.showErrorMessage('No course selected')
+    return
+  }
+
+  if (!submissionsPanel) {
+    vscode.window.showErrorMessage('Submissions panel not available')
+    return
+  }
+
+  // Show the submissions view
+  await vscode.commands.executeCommand('canvasAuthorSubmissions.focus')
+
+  // Load all submissions for this course
+  await submissionsPanel.showAllSubmissions(item.courseInfo.id, item.courseInfo.name)
 }
 
 async function deleteAssignment(item?: CourseTreeItem) {

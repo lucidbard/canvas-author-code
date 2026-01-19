@@ -149,6 +149,11 @@
           "group": "sync@10"
         },
         {
+          "command": "canvas-author.showAllSubmissions",
+          "when": "view == canvasAuthorCourses && viewItem == course",
+          "group": "view@1"
+        },
+        {
           "command": "canvas-author.createPage",
           "when": "view == canvasAuthorCourses && viewItem == course",
           "group": "create@1"
@@ -382,6 +387,11 @@
       {
         "command": "canvas-author.deleteAssignment",
         "title": "Canvas: Delete Assignment"
+      },
+      {
+        "command": "canvas-author.showAllSubmissions",
+        "title": "Canvas: View All Submissions",
+        "icon": "$(checklist)"
       },
       {
         "command": "canvas-author.renameSubheader",

@@ -18,10 +18,27 @@ interface Submission {
   late?: boolean
 }
 
+interface AssignmentWithSubmissions {
+  id: string
+  name: string
+  due_at?: string
+  points_possible: number
+  submission_counts: {
+    total: number
+    submitted: number
+    graded: number
+    needs_grading: number
+    late: number
+  }
+  submissions: Submission[]
+}
+
 export class SubmissionsPanel implements vscode.WebviewViewProvider {
   public static readonly viewType = 'canvasAuthorSubmissions'
   private _view?: vscode.WebviewView
   private _currentAssignment?: { courseId: string; assignmentId: string; title: string }
+  private _currentCourse?: { courseId: string; courseName: string }
+  private _viewMode: 'single' | 'hierarchical' = 'hierarchical'
   private _mcpClient?: CanvasMcpClient
 
   constructor(
@@ -35,13 +52,23 @@ export class SubmissionsPanel implements vscode.WebviewViewProvider {
 
   public async showAssignmentSubmissions(courseId: string, assignmentId: string, title: string) {
     this._currentAssignment = { courseId, assignmentId, title }
+    this._viewMode = 'single'
     if (this._view) {
       await this._update()
     }
   }
 
+  public async showAllSubmissions(courseId: string, courseName: string) {
+    this._currentCourse = { courseId, courseName }
+    this._viewMode = 'hierarchical'
+    if (this._view) {
+      await this._updateHierarchical()
+    }
+  }
+
   public clear() {
     this._currentAssignment = undefined
+    this._currentCourse = undefined
     if (this._view) {
       this._view.webview.html = this._getWelcomeHtml()
     }
@@ -67,7 +94,10 @@ export class SubmissionsPanel implements vscode.WebviewViewProvider {
             await this.openSubmissionForGrading(message.submissionId)
             break
           case 'submitGrade':
-            await this.submitGrade(message.userId, message.grade, message.comment)
+            await this.submitGrade(message.assignmentId, message.userId, message.grade, message.comment)
+            break
+          case 'toggleView':
+            await this.toggleViewMode()
             break
         }
       },
@@ -75,7 +105,9 @@ export class SubmissionsPanel implements vscode.WebviewViewProvider {
       []
     )
 
-    if (this._currentAssignment) {
+    if (this._viewMode === 'hierarchical' && this._currentCourse) {
+      this._updateHierarchical()
+    } else if (this._currentAssignment) {
       this._update()
     } else {
       webviewView.webview.html = this._getWelcomeHtml()
@@ -93,25 +125,52 @@ export class SubmissionsPanel implements vscode.WebviewViewProvider {
     // This would fetch the submission text, attachments, etc.
   }
 
-  private async submitGrade(userId: string, grade: string, comment: string) {
-    if (!this._currentAssignment || !this._mcpClient) {
+  private async submitGrade(assignmentId: string, userId: string, grade: string, comment: string) {
+    if (!this._mcpClient) {
+      return
+    }
+
+    const courseId = this._currentAssignment?.courseId || this._currentCourse?.courseId
+    if (!courseId) {
       return
     }
 
     try {
       // Submit grade via MCP
       await this._mcpClient.callTool('update_grade', {
-        course_id: this._currentAssignment.courseId,
-        assignment_id: this._currentAssignment.assignmentId,
+        course_id: courseId,
+        assignment_id: assignmentId,
         user_id: userId,
         grade: grade,
         comment: comment
       })
 
       vscode.window.showInformationMessage('Grade submitted successfully!')
-      await this._update() // Refresh the list
+
+      // Refresh the appropriate view
+      if (this._viewMode === 'hierarchical') {
+        await this._updateHierarchical()
+      } else {
+        await this._update()
+      }
     } catch (error) {
       vscode.window.showErrorMessage(`Failed to submit grade: ${error}`)
+    }
+  }
+
+  private async toggleViewMode() {
+    if (this._viewMode === 'single' && this._currentAssignment) {
+      // Switch to hierarchical view for the course
+      this._currentCourse = {
+        courseId: this._currentAssignment.courseId,
+        courseName: 'Course'
+      }
+      this._viewMode = 'hierarchical'
+      await this._updateHierarchical()
+    } else if (this._viewMode === 'hierarchical' && this._currentCourse) {
+      // Can't switch back without knowing which assignment to show
+      // Just stay in hierarchical mode
+      vscode.window.showInformationMessage('Click an assignment to view its submissions individually')
     }
   }
 
@@ -137,6 +196,33 @@ export class SubmissionsPanel implements vscode.WebviewViewProvider {
 
       const submissions = Array.isArray(result) ? result : []
       webview.html = this._getSubmissionsHtml(submissions, this._currentAssignment.title)
+    } catch (error) {
+      webview.html = this._getErrorHtml(`Failed to load submissions: ${error}`)
+    }
+  }
+
+  private async _updateHierarchical() {
+    if (!this._view || !this._currentCourse) {
+      return
+    }
+
+    const webview = this._view.webview
+
+    if (!this._mcpClient) {
+      webview.html = this._getErrorHtml('Canvas connection not available')
+      return
+    }
+
+    try {
+      // Fetch all submissions hierarchically
+      const result = await this._mcpClient.callTool('get_all_submissions_hierarchical', {
+        course_id: this._currentCourse.courseId,
+        include_user: true,
+        include_rubric: false
+      })
+
+      const assignments: AssignmentWithSubmissions[] = Array.isArray(result) ? result : []
+      webview.html = this._getHierarchicalSubmissionsHtml(assignments, this._currentCourse.courseName)
     } catch (error) {
       webview.html = this._getErrorHtml(`Failed to load submissions: ${error}`)
     }
@@ -390,17 +476,18 @@ export class SubmissionsPanel implements vscode.WebviewViewProvider {
             form.classList.toggle('active');
         }
         
-        function submitGrade(userId) {
+        function submitGrade(assignmentId, userId) {
             const gradeInput = document.getElementById('grade-' + userId);
             const commentInput = document.getElementById('comment-' + userId);
-            
+
             vscode.postMessage({
                 command: 'submitGrade',
+                assignmentId: assignmentId,
                 userId: userId,
                 grade: gradeInput.value,
                 comment: commentInput.value
             });
-            
+
             // Reset form
             gradeInput.value = '';
             commentInput.value = '';
@@ -459,10 +546,400 @@ export class SubmissionsPanel implements vscode.WebviewViewProvider {
                     <div class="grade-form">
                         <input type="text" class="grade-input" id="grade-${userId}" 
                                placeholder="Grade" value="${sub.grade || sub.score || ''}" />
-                        <button class="grade-button" onclick="submitGrade('${userId}')">Submit</button>
+                        <button class="grade-button" onclick="submitGrade('${this._currentAssignment?.assignmentId}', '${userId}')">Submit</button>
                     </div>
                     <textarea class="comment-input" id="comment-${userId}" 
                               placeholder="Comment (optional)"></textarea>
+                </div>
+            </div>
+        `}).join('')}
+    </div>
+</body>
+</html>`
+  }
+
+  private _getHierarchicalSubmissionsHtml(assignments: AssignmentWithSubmissions[], courseName: string): string {
+    const totalAssignments = assignments.length
+    const totalSubmissions = assignments.reduce((sum, a) => sum + a.submission_counts.submitted, 0)
+    const totalNeedsGrading = assignments.reduce((sum, a) => sum + a.submission_counts.needs_grading, 0)
+
+    return `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>All Submissions</title>
+    <style>
+        body {
+            font-family: var(--vscode-font-family);
+            padding: 0;
+            margin: 0;
+            color: var(--vscode-foreground);
+        }
+
+        .header {
+            padding: 16px;
+            border-bottom: 1px solid var(--vscode-panel-border);
+            background-color: var(--vscode-editor-background);
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+
+        .course-title {
+            font-size: 14px;
+            font-weight: 600;
+            margin: 0 0 12px 0;
+            color: var(--vscode-foreground);
+        }
+
+        .global-stats {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 8px;
+        }
+
+        .stat {
+            background-color: var(--vscode-editor-inactiveSelectionBackground);
+            padding: 8px;
+            border-radius: 4px;
+        }
+
+        .stat-label {
+            font-size: 11px;
+            color: var(--vscode-descriptionForeground);
+            margin-bottom: 2px;
+        }
+
+        .stat-value {
+            font-size: 18px;
+            font-weight: 600;
+        }
+
+        .assignments-list {
+            padding: 8px;
+        }
+
+        .assignment-container {
+            margin-bottom: 8px;
+            border: 1px solid var(--vscode-panel-border);
+            border-radius: 4px;
+            overflow: hidden;
+        }
+
+        .assignment-header {
+            padding: 12px;
+            background-color: var(--vscode-editor-inactiveSelectionBackground);
+            cursor: pointer;
+            transition: background-color 0.1s;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .assignment-header:hover {
+            background-color: var(--vscode-list-hoverBackground);
+        }
+
+        .assignment-title-section {
+            flex: 1;
+        }
+
+        .assignment-title {
+            font-weight: 600;
+            margin-bottom: 4px;
+        }
+
+        .assignment-meta {
+            font-size: 11px;
+            color: var(--vscode-descriptionForeground);
+        }
+
+        .assignment-stats {
+            display: flex;
+            gap: 12px;
+            font-size: 12px;
+        }
+
+        .assignment-stat {
+            text-align: center;
+        }
+
+        .assignment-stat-value {
+            font-weight: 600;
+            font-size: 16px;
+        }
+
+        .assignment-stat-label {
+            font-size: 10px;
+            color: var(--vscode-descriptionForeground);
+        }
+
+        .expand-icon {
+            margin-left: 12px;
+            transition: transform 0.2s;
+        }
+
+        .expand-icon.expanded {
+            transform: rotate(90deg);
+        }
+
+        .submissions-section {
+            display: none;
+            border-top: 1px solid var(--vscode-panel-border);
+        }
+
+        .submissions-section.expanded {
+            display: block;
+        }
+
+        .submission {
+            padding: 12px;
+            border-bottom: 1px solid var(--vscode-panel-border);
+        }
+
+        .submission:last-child {
+            border-bottom: none;
+        }
+
+        .submission-content {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            cursor: pointer;
+        }
+
+        .submission-user {
+            flex: 1;
+        }
+
+        .user-name {
+            font-weight: 500;
+            margin-bottom: 2px;
+        }
+
+        .submission-time {
+            font-size: 11px;
+            color: var(--vscode-descriptionForeground);
+        }
+
+        .submission-grade {
+            text-align: right;
+            margin-left: 12px;
+        }
+
+        .grade-value {
+            font-weight: 600;
+            font-size: 14px;
+        }
+
+        .status-badge {
+            display: inline-block;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-size: 10px;
+            font-weight: 600;
+            text-transform: uppercase;
+            margin-top: 4px;
+            margin-right: 4px;
+        }
+
+        .status-submitted {
+            background-color: var(--vscode-inputValidation-infoBackground);
+            color: var(--vscode-inputValidation-infoForeground);
+        }
+
+        .status-graded {
+            background-color: var(--vscode-inputValidation-warningBackground);
+            color: var(--vscode-inputValidation-warningForeground);
+        }
+
+        .status-late {
+            background-color: var(--vscode-inputValidation-errorBackground);
+            color: var(--vscode-inputValidation-errorForeground);
+        }
+
+        .grade-input-container {
+            margin-top: 8px;
+            padding: 8px;
+            background-color: var(--vscode-editor-inactiveSelectionBackground);
+            border-radius: 4px;
+            display: none;
+        }
+
+        .grade-input-container.active {
+            display: block;
+        }
+
+        .grade-form {
+            display: flex;
+            gap: 4px;
+            margin-bottom: 4px;
+        }
+
+        .grade-input {
+            flex: 1;
+            padding: 4px 8px;
+            background-color: var(--vscode-input-background);
+            color: var(--vscode-input-foreground);
+            border: 1px solid var(--vscode-input-border);
+            border-radius: 2px;
+            font-size: 12px;
+        }
+
+        .grade-button {
+            padding: 4px 12px;
+            background-color: var(--vscode-button-background);
+            color: var(--vscode-button-foreground);
+            border: none;
+            border-radius: 2px;
+            cursor: pointer;
+            font-size: 12px;
+        }
+
+        .grade-button:hover {
+            background-color: var(--vscode-button-hoverBackground);
+        }
+
+        .comment-input {
+            width: 100%;
+            padding: 4px 8px;
+            background-color: var(--vscode-input-background);
+            color: var(--vscode-input-foreground);
+            border: 1px solid var(--vscode-input-border);
+            border-radius: 2px;
+            font-size: 12px;
+            resize: vertical;
+            min-height: 50px;
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 40px 20px;
+            color: var(--vscode-descriptionForeground);
+        }
+    </style>
+    <script>
+        const vscode = acquireVsCodeApi();
+
+        function toggleAssignment(assignmentId) {
+            const section = document.getElementById('submissions-' + assignmentId);
+            const icon = document.getElementById('icon-' + assignmentId);
+            section.classList.toggle('expanded');
+            icon.classList.toggle('expanded');
+        }
+
+        function toggleGradeForm(assignmentId, userId) {
+            const form = document.getElementById('grade-form-' + assignmentId + '-' + userId);
+            form.classList.toggle('active');
+        }
+
+        function submitGrade(assignmentId, userId) {
+            const gradeInput = document.getElementById('grade-' + assignmentId + '-' + userId);
+            const commentInput = document.getElementById('comment-' + assignmentId + '-' + userId);
+
+            vscode.postMessage({
+                command: 'submitGrade',
+                assignmentId: assignmentId,
+                userId: userId,
+                grade: gradeInput.value,
+                comment: commentInput.value
+            });
+
+            // Reset form
+            gradeInput.value = '';
+            commentInput.value = '';
+            toggleGradeForm(assignmentId, userId);
+        }
+    </script>
+</head>
+<body>
+    <div class="header">
+        <h3 class="course-title">${courseName} - All Submissions</h3>
+        <div class="global-stats">
+            <div class="stat">
+                <div class="stat-label">Assignments</div>
+                <div class="stat-value">${totalAssignments}</div>
+            </div>
+            <div class="stat">
+                <div class="stat-label">Submitted</div>
+                <div class="stat-value">${totalSubmissions}</div>
+            </div>
+            <div class="stat">
+                <div class="stat-label">Needs Grading</div>
+                <div class="stat-value">${totalNeedsGrading}</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="assignments-list">
+        ${assignments.length === 0 ? `
+            <div class="empty-state">
+                <p>No assignments with submissions</p>
+            </div>
+        ` : assignments.map(assignment => {
+            const counts = assignment.submission_counts
+            return `
+            <div class="assignment-container">
+                <div class="assignment-header" onclick="toggleAssignment('${assignment.id}')">
+                    <div class="assignment-title-section">
+                        <div class="assignment-title">${assignment.name}</div>
+                        <div class="assignment-meta">
+                            ${assignment.due_at ? `Due: ${new Date(assignment.due_at).toLocaleDateString()}` : 'No due date'} •
+                            ${assignment.points_possible} pts
+                        </div>
+                    </div>
+                    <div class="assignment-stats">
+                        <div class="assignment-stat">
+                            <div class="assignment-stat-value">${counts.submitted}</div>
+                            <div class="assignment-stat-label">Submitted</div>
+                        </div>
+                        <div class="assignment-stat">
+                            <div class="assignment-stat-value">${counts.graded}</div>
+                            <div class="assignment-stat-label">Graded</div>
+                        </div>
+                        <div class="assignment-stat">
+                            <div class="assignment-stat-value">${counts.needs_grading}</div>
+                            <div class="assignment-stat-label">To Grade</div>
+                        </div>
+                    </div>
+                    <div class="expand-icon" id="icon-${assignment.id}">▶</div>
+                </div>
+                <div class="submissions-section" id="submissions-${assignment.id}">
+                    ${assignment.submissions.length === 0 ? `
+                        <div class="empty-state">
+                            <p>No submissions yet</p>
+                        </div>
+                    ` : assignment.submissions.map(sub => {
+                        const userName = sub.user?.name || sub.user_name || `User ${sub.user_id}`
+                        const userId = sub.user?.id || sub.user_id
+                        return `
+                        <div class="submission">
+                            <div class="submission-content" onclick="toggleGradeForm('${assignment.id}', '${userId}')">
+                                <div class="submission-user">
+                                    <div class="user-name">${userName}</div>
+                                    ${sub.submitted_at && sub.submitted_at !== 'None' ? `<div class="submission-time">${new Date(sub.submitted_at).toLocaleString()}</div>` : ''}
+                                    ${sub.workflow_state === 'graded' ? '<span class="status-badge status-graded">Graded</span>' :
+                                      sub.workflow_state === 'submitted' ? '<span class="status-badge status-submitted">Submitted</span>' : ''}
+                                    ${sub.late ? '<span class="status-badge status-late">Late</span>' : ''}
+                                </div>
+                                ${sub.score !== undefined || sub.grade ? `
+                                <div class="submission-grade">
+                                    <div class="grade-value">${sub.grade || sub.score || '—'}</div>
+                                </div>
+                                ` : ''}
+                            </div>
+                            <div class="grade-input-container" id="grade-form-${assignment.id}-${userId}">
+                                <div class="grade-form">
+                                    <input type="text" class="grade-input" id="grade-${assignment.id}-${userId}"
+                                           placeholder="Grade" value="${sub.grade || sub.score || ''}" />
+                                    <button class="grade-button" onclick="submitGrade('${assignment.id}', '${userId}')">Submit</button>
+                                </div>
+                                <textarea class="comment-input" id="comment-${assignment.id}-${userId}"
+                                          placeholder="Comment (optional)"></textarea>
+                            </div>
+                        </div>
+                    `}).join('')}
                 </div>
             </div>
         `}).join('')}
