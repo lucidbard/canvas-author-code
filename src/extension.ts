@@ -12,6 +12,7 @@ import { SubmissionsPanel } from './submissionsPanel'
 import { CourseSettingsPanel } from './courseSettingsPanel'
 import { QuizPreviewPanel } from './quizPreviewPanel'
 import { ModuleEditorPanel } from './moduleEditorPanel'
+import { RubricPanel } from './rubricPanel'
 
 // Response type interfaces
 interface Course {
@@ -201,6 +202,15 @@ export async function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider('canvasAuthorMetadata', metadataPanel)
   )
+
+  // Register rubric panel (bottom panel)
+  const rubricPanel = new RubricPanel(context.extensionUri)
+  context.subscriptions.push(
+    vscode.window.registerWebviewViewProvider(RubricPanel.viewType, rubricPanel)
+  )
+
+  // Pass rubric panel to submissions panel
+  submissionsPanel.setRubricPanel(rubricPanel, () => mcpClient)
 
   // Register commands
   context.subscriptions.push(

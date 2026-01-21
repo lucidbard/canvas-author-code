@@ -46,6 +46,13 @@
           "title": "Canvas Author",
           "icon": "$(book)"
         }
+      ],
+      "panel": [
+        {
+          "id": "canvas-author-grading",
+          "title": "Canvas Grading",
+          "icon": "$(edit)"
+        }
       ]
     },
     "views": {
@@ -68,6 +75,13 @@
           "name": "Properties",
           "icon": "$(symbol-property)",
           "contextualTitle": "Canvas Author",
+          "type": "webview"
+        }
+      ],
+      "canvas-author-grading": [
+        {
+          "id": "canvasAuthorRubric",
+          "name": "Rubric",
           "type": "webview"
         }
       ]
