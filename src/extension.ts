@@ -127,6 +127,7 @@ let mcpClient: CanvasMcpClient | undefined
 let courseTreeProvider: CourseTreeProvider
 let extensionContext: vscode.ExtensionContext
 let submissionsPanel: SubmissionsPanel | undefined
+let teleprompterProcess: child_process.ChildProcess | undefined
 
 // Check if Canvas is configured
 async function hasCanvasToken(context: vscode.ExtensionContext): Promise<boolean> {
@@ -138,6 +139,16 @@ async function hasCanvasToken(context: vscode.ExtensionContext): Promise<boolean
 async function updateTokenContext(context: vscode.ExtensionContext) {
   const hasToken = await hasCanvasToken(context)
   await vscode.commands.executeCommand('setContext', 'canvas-author.hasToken', hasToken)
+}
+
+// Kill any existing teleprompter-server.py processes
+async function killPreviousTeleprompter(): Promise<void> {
+  return new Promise((resolve) => {
+    child_process.exec('pkill -f teleprompter-server.py', (error) => {
+      // Ignore errors - just means no process was found
+      resolve()
+    })
+  })
 }
 
 // Show onboarding panel if Canvas is not configured, returns true if connected
@@ -287,14 +298,18 @@ export async function activate(context: vscode.ExtensionContext) {
         return
       }
 
-      // Start Python websocket server (don't detach - we want to keep it attached)
-      const serverProcess = child_process.spawn('python3', [serverScript], {
+      // Kill any previous teleprompter server instance
+      await killPreviousTeleprompter()
+      await new Promise(resolve => setTimeout(resolve, 500))
+
+      // Start Python websocket server
+      teleprompterProcess = child_process.spawn('python3', [serverScript], {
         cwd: courseMaterialsDir,
         stdio: ['ignore', 'pipe', 'pipe']
       })
 
       // Log server output
-      serverProcess.stdout?.on('data', (data) => {
+      teleprompterProcess.stdout?.on('data', (data) => {
         const output = data.toString()
         console.log(`Teleprompter: ${output}`)
         // Show important messages to user
@@ -303,18 +318,20 @@ export async function activate(context: vscode.ExtensionContext) {
         }
       })
 
-      serverProcess.stderr?.on('data', (data) => {
+      teleprompterProcess.stderr?.on('data', (data) => {
         console.error(`Teleprompter error: ${data}`)
       })
 
-      serverProcess.on('error', (err) => {
+      teleprompterProcess.on('error', (err) => {
         vscode.window.showErrorMessage(`Teleprompter server failed to start: ${err.message}`)
       })
 
-      serverProcess.on('exit', (code) => {
+      teleprompterProcess.on('exit', (code) => {
         if (code !== null && code !== 0) {
           vscode.window.showWarningMessage(`Teleprompter server exited with code ${code}`)
         }
+        // Clear the reference when process exits
+        teleprompterProcess = undefined
       })
 
       // Wait a moment for server to start
@@ -325,16 +342,6 @@ export async function activate(context: vscode.ExtensionContext) {
       vscode.env.openExternal(vscode.Uri.parse(url))
 
       vscode.window.showInformationMessage('Teleprompter server started with live reload on http://localhost:8000')
-
-      // Store process for cleanup
-      context.subscriptions.push({
-        dispose: () => {
-          if (serverProcess && !serverProcess.killed) {
-            serverProcess.kill('SIGTERM')
-            console.log('Teleprompter server stopped')
-          }
-        }
-      })
     })
   )
 
@@ -3212,6 +3219,23 @@ async function testMcpConnection() {
     channel.appendLine('2. Communication error between extension and server')
     channel.appendLine('3. Check "Canvas Author MCP" output channel for server logs')
     vscode.window.showErrorMessage(`MCP connection test failed: ${error}`)
+  }
+}
+
+// Called when extension is deactivated
+export function deactivate() {
+  console.log('Canvas Author extension is deactivating')
+
+  // Kill teleprompter server if running
+  if (teleprompterProcess && !teleprompterProcess.killed) {
+    console.log('Stopping teleprompter server...')
+    teleprompterProcess.kill('SIGTERM')
+    teleprompterProcess = undefined
+  }
+
+  // Dispose MCP client
+  if (mcpClient) {
+    mcpClient.dispose()
   }
 }
 
