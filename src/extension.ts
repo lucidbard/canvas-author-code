@@ -13,6 +13,8 @@ import { CourseSettingsPanel } from './courseSettingsPanel'
 import { QuizPreviewPanel } from './quizPreviewPanel'
 import { ModuleEditorPanel } from './moduleEditorPanel'
 import { RubricPanel } from './rubricPanel'
+import { ReviewTreeProvider, ReviewTreeItem } from './reviewTreeProvider'
+import { ReviewPanel } from './reviewPanel'
 
 // Response type interfaces
 interface Course {
@@ -127,6 +129,8 @@ let mcpClient: CanvasMcpClient | undefined
 let courseTreeProvider: CourseTreeProvider
 let extensionContext: vscode.ExtensionContext
 let submissionsPanel: SubmissionsPanel | undefined
+let reviewTreeProvider: ReviewTreeProvider
+let reviewPanel: ReviewPanel | undefined
 let teleprompterProcess: child_process.ChildProcess | undefined
 
 // Check if Canvas is configured
@@ -208,6 +212,39 @@ export async function activate(context: vscode.ExtensionContext) {
     vscode.window.registerWebviewViewProvider('canvasAuthorSubmissions', submissionsPanel)
   )
 
+  // Register review tree provider
+  reviewTreeProvider = new ReviewTreeProvider()
+  reviewTreeProvider.setMcpClient(mcpClient)
+  const reviewTreeView = vscode.window.createTreeView('canvasAuthorReviewTree', {
+    treeDataProvider: reviewTreeProvider
+  })
+  context.subscriptions.push(reviewTreeView)
+
+  // Register review panel
+  reviewPanel = new ReviewPanel(context.extensionUri, context)
+  reviewPanel.setMcpClient(mcpClient)
+  context.subscriptions.push(
+    vscode.window.registerWebviewViewProvider('canvasAuthorReview', reviewPanel)
+  )
+
+  // Set initial course path for review tree if workspace is open
+  const folders = vscode.workspace.workspaceFolders
+  if (folders && folders.length > 0) {
+    reviewTreeProvider.setCoursePath(folders[0].uri.fsPath)
+  }
+
+  // Listen for workspace folder changes to update review tree
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeWorkspaceFolders(() => {
+      const folders = vscode.workspace.workspaceFolders
+      if (folders && folders.length > 0) {
+        reviewTreeProvider.setCoursePath(folders[0].uri.fsPath)
+      } else {
+        reviewTreeProvider.setCoursePath(undefined)
+      }
+    })
+  )
+
   // Register metadata panel
   const metadataPanel = new MetadataPanel(context)
   context.subscriptions.push(
@@ -264,6 +301,8 @@ export async function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('canvas-author.openAssignment', (item?: CourseTreeItem) => openAssignment(item, context)),
     vscode.commands.registerCommand('canvas-author.deleteAssignment', (item?: CourseTreeItem) => deleteAssignment(item)),
     vscode.commands.registerCommand('canvas-author.showAllSubmissions', (item?: CourseTreeItem) => showAllSubmissions(item)),
+    vscode.commands.registerCommand('canvas-author.showReviewItem', (item?: ReviewTreeItem) => showReviewItem(item)),
+    vscode.commands.registerCommand('canvas-author.refreshReviews', () => refreshReviews()),
     vscode.commands.registerCommand('canvas-author.deletePage', (item?: CourseTreeItem) => deletePage(item)),
     vscode.commands.registerCommand('canvas-author.previewRubric', () => previewRubric(context)),
     vscode.commands.registerCommand('canvas-author.previewQuiz', (item?: CourseTreeItem) => previewQuiz(item, context)),
@@ -3219,6 +3258,30 @@ async function testMcpConnection() {
     channel.appendLine('2. Communication error between extension and server')
     channel.appendLine('3. Check "Canvas Author MCP" output channel for server logs')
     vscode.window.showErrorMessage(`MCP connection test failed: ${error}`)
+  }
+}
+
+async function showReviewItem(item?: ReviewTreeItem) {
+  if (!item || item.itemType !== 'item' || !item.itemData || !item.coursePath || !item.worktreeName) {
+    vscode.window.showErrorMessage('Please select a review item')
+    return
+  }
+
+  if (!reviewPanel) {
+    vscode.window.showErrorMessage('Review panel not available')
+    return
+  }
+
+  // Show the review view
+  await vscode.commands.executeCommand('canvasAuthorReview.focus')
+
+  // Load the item
+  await reviewPanel.showItemReview(item.coursePath, item.worktreeName, item.itemData)
+}
+
+async function refreshReviews() {
+  if (reviewTreeProvider) {
+    reviewTreeProvider.refresh()
   }
 }
 

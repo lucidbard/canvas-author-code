@@ -63,9 +63,22 @@
           "contextualTitle": "Canvas Author"
         },
         {
+          "id": "canvasAuthorReviewTree",
+          "name": "To Review",
+          "icon": "$(comment-discussion)",
+          "contextualTitle": "Canvas Author"
+        },
+        {
           "id": "canvasAuthorSubmissions",
           "name": "Submissions",
           "icon": "$(checklist)",
+          "contextualTitle": "Canvas Author",
+          "type": "webview"
+        },
+        {
+          "id": "canvasAuthorReview",
+          "name": "Review",
+          "icon": "$(comment)",
           "contextualTitle": "Canvas Author",
           "type": "webview"
         },
@@ -107,6 +120,11 @@
         {
           "command": "canvas-author.addCourse",
           "when": "view == canvasAuthorCourses",
+          "group": "navigation"
+        },
+        {
+          "command": "canvas-author.refreshReviews",
+          "when": "view == canvasAuthorReviewTree",
           "group": "navigation"
         }
       ],
@@ -235,6 +253,11 @@
           "command": "canvas-author.deleteAssignment",
           "when": "view == canvasAuthorCourses && viewItem == assignment",
           "group": "z_destructive"
+        },
+        {
+          "command": "canvas-author.showReviewItem",
+          "when": "view == canvasAuthorReviewTree && viewItem == item",
+          "group": "navigation"
         },
         {
           "command": "canvas-author.renameSubheader",
@@ -407,6 +430,15 @@
         "icon": "$(checklist)"
       },
       {
+        "command": "canvas-author.showReviewItem",
+        "title": "Canvas: Review Item"
+      },
+      {
+        "command": "canvas-author.refreshReviews",
+        "title": "Canvas: Refresh Reviews",
+        "icon": "$(refresh)"
+      },
+      {
         "command": "canvas-author.renameSubheader",
         "title": "Rename Subheader",
         "icon": "$(edit)"
@@ -475,6 +507,11 @@
           "type": "boolean",
           "default": true,
           "description": "Enable agent review workflow features (requires MCP server with review tools)"
+        },
+        "canvas-author.reviewerName": {
+          "type": "string",
+          "default": "Human Reviewer",
+          "description": "Your name to use when submitting reviews"
         }
       }
     },
