@@ -512,6 +512,16 @@
           "type": "string",
           "default": "Human Reviewer",
           "description": "Your name to use when submitting reviews"
+        },
+        "canvas-author.mcpServerHost": {
+          "type": "string",
+          "default": "127.0.0.1",
+          "description": "Canvas Author MCP server host (for shared HTTP server)"
+        },
+        "canvas-author.mcpServerPort": {
+          "type": "number",
+          "default": 8000,
+          "description": "Canvas Author MCP server port (for shared HTTP server)"
         }
       }
     },
@@ -528,6 +538,7 @@
     "@types/js-yaml": "^4.0.9",
     "@types/mocha": "^10.0.6",
     "@types/node": "^20.10.0",
+    "@types/node-fetch": "^2.6.11",
     "@types/vscode": "^1.85.0",
     "@typescript-eslint/eslint-plugin": "^6.13.0",
     "@typescript-eslint/parser": "^6.13.0",
@@ -538,6 +549,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.52.0",
-    "js-yaml": "^4.1.1"
+    "js-yaml": "^4.1.1",
+    "node-fetch": "^2.7.0"
   }
 }
