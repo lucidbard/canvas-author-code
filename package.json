@@ -34,8 +34,7 @@
     "sync"
   ],
   "activationEvents": [
-    "workspaceContains:.canvas.json",
-    "onView:canvasAuthorCourses"
+    "workspaceContains:.canvas.json"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -446,6 +445,12 @@
         "command": "canvas-author.openTeleprompter",
         "title": "Canvas: Open Teleprompter",
         "icon": "$(device-camera-video)"
+      }
+    ],
+    "yamlValidation": [
+      {
+        "fileMatch": "*.rubric.yaml",
+        "url": "./schemas/rubric.schema.json"
       }
     ],
     "configuration": {
