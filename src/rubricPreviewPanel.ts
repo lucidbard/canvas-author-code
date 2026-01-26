@@ -38,6 +38,8 @@ export class RubricPreviewPanel {
   private _disposables: vscode.Disposable[] = []
   private _currentRubricPath: string = ''
   private _currentAssignmentName: string = ''
+  private _fileWatcher: vscode.FileSystemWatcher | undefined
+  private _loadRequestId: number = 0
 
   public static createOrShow(extensionUri: vscode.Uri, rubricPath: string, assignmentName: string) {
     const column = vscode.ViewColumn.Beside
@@ -69,18 +71,12 @@ export class RubricPreviewPanel {
     this._currentRubricPath = rubricPath
     this._currentAssignmentName = assignmentName
 
-    // Set the webview's initial html content
-    this._updateFromPath(rubricPath, assignmentName)
-
     // Listen for when the panel is disposed
     this._panel.onDidDispose(() => this.dispose(), null, this._disposables)
 
-    // Watch for file changes via FileSystemWatcher
-    const fileWatcher = vscode.workspace.createFileSystemWatcher(rubricPath)
-    fileWatcher.onDidChange(() => {
-      this._updateFromPath(this._currentRubricPath, this._currentAssignmentName)
-    }, null, this._disposables)
-    this._disposables.push(fileWatcher)
+    // Set up initial file watcher and update content
+    this._updateFileWatcher(rubricPath)
+    this._updateFromPath(rubricPath, assignmentName)
 
     // Also watch for document changes (live updates while editing)
     vscode.workspace.onDidChangeTextDocument(
@@ -108,8 +104,10 @@ export class RubricPreviewPanel {
                 newAssignmentName = data.assignment_name
               }
             } catch (e) {
-              // Ignore parse errors
+              console.error('Canvas Author: Failed to parse rubric for assignment name:', e)
             }
+            // Update file watcher for new path
+            this._updateFileWatcher(newPath)
             this._updateFromPath(newPath, newAssignmentName)
           }
         }
@@ -119,10 +117,26 @@ export class RubricPreviewPanel {
     )
   }
 
+  private _updateFileWatcher(rubricPath: string) {
+    // Dispose old watcher if exists
+    if (this._fileWatcher) {
+      this._fileWatcher.dispose()
+    }
+
+    // Create new watcher for the new path
+    this._fileWatcher = vscode.workspace.createFileSystemWatcher(rubricPath)
+    this._fileWatcher.onDidChange(() => {
+      this._updateFromPath(this._currentRubricPath, this._currentAssignmentName)
+    }, null, this._disposables)
+  }
+
   private _updateFromPath(rubricPath: string, assignmentName: string) {
     this._currentRubricPath = rubricPath
     this._currentAssignmentName = assignmentName
     this._panel.title = `Rubric: ${assignmentName}`
+
+    // Increment request ID to handle race conditions
+    const requestId = ++this._loadRequestId
 
     // Try to get the document if it's open in an editor
     const openDoc = vscode.workspace.textDocuments.find(
@@ -135,10 +149,18 @@ export class RubricPreviewPanel {
       // Read from file system
       vscode.workspace.fs.readFile(vscode.Uri.file(rubricPath)).then(
         (content) => {
+          // Discard stale responses
+          if (requestId !== this._loadRequestId) {
+            return
+          }
           this._updateContent(content.toString())
         },
         (error) => {
-          this._panel.webview.html = this._getErrorHtml(`Failed to load rubric: ${error}`)
+          // Discard stale errors
+          if (requestId !== this._loadRequestId) {
+            return
+          }
+          this._panel.webview.html = this._getErrorHtml(this._panel.webview, `Failed to load rubric: ${error}`)
         }
       )
     }
@@ -154,12 +176,12 @@ export class RubricPreviewPanel {
       const rubricData = yaml.load(content) as RubricFile
 
       if (!rubricData || !rubricData.rubric) {
-        this._panel.webview.html = this._getErrorHtml('Invalid rubric structure. Missing "rubric" field.')
+        this._panel.webview.html = this._getErrorHtml(this._panel.webview, 'Invalid rubric structure. Missing "rubric" field.')
         return
       }
 
       if (!rubricData.rubric.criteria || !Array.isArray(rubricData.rubric.criteria)) {
-        this._panel.webview.html = this._getErrorHtml('Invalid rubric structure. Missing or invalid "criteria" array.')
+        this._panel.webview.html = this._getErrorHtml(this._panel.webview, 'Invalid rubric structure. Missing or invalid "criteria" array.')
         return
       }
 
@@ -172,7 +194,7 @@ export class RubricPreviewPanel {
       this._panel.webview.html = this._getHtmlForWebview(this._panel.webview, rubricData)
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error)
-      this._panel.webview.html = this._getErrorHtml(`YAML Parse Error: ${errorMsg}`)
+      this._panel.webview.html = this._getErrorHtml(this._panel.webview, `YAML Parse Error: ${errorMsg}`)
     }
   }
 
@@ -395,14 +417,14 @@ export class RubricPreviewPanel {
 </html>`
   }
 
-  private _getErrorHtml(error: string): string {
+  private _getErrorHtml(webview: vscode.Webview, error: string): string {
     const nonce = getNonce()
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}';">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';">
     <title>Rubric Preview - Error</title>
     <style>
         body {
@@ -435,6 +457,11 @@ export class RubricPreviewPanel {
 
   public dispose() {
     RubricPreviewPanel.currentPanel = undefined
+
+    // Dispose file watcher
+    if (this._fileWatcher) {
+      this._fileWatcher.dispose()
+    }
 
     this._panel.dispose()
 

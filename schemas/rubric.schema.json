@@ -4,7 +4,7 @@
   "title": "Canvas Rubric",
   "description": "Schema for Canvas LMS rubric YAML files",
   "type": "object",
-  "required": ["assignment_id", "rubric"],
+  "required": ["rubric"],
   "properties": {
     "assignment_id": {
       "type": ["integer", "string"],
@@ -47,8 +47,7 @@
             "properties": {
               "id": {
                 "type": "string",
-                "description": "Criterion ID (format: _xxxx)",
-                "pattern": "^_[0-9]+$"
+                "description": "Criterion ID (Canvas-generated, typically _xxxx format)"
               },
               "description": {
                 "type": "string",

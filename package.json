@@ -34,8 +34,7 @@
     "sync"
   ],
   "activationEvents": [
-    "workspaceContains:.canvas.json",
-    "onView:canvasAuthorCourses"
+    "workspaceContains:.canvas.json"
   ],
   "main": "./out/extension.js",
   "contributes": {
