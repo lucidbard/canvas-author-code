@@ -1,0 +1,99 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/lucidbard/canvas-author-code/schemas/rubric.schema.json",
+  "title": "Canvas Rubric",
+  "description": "Schema for Canvas LMS rubric YAML files",
+  "type": "object",
+  "required": ["assignment_id", "rubric"],
+  "properties": {
+    "assignment_id": {
+      "type": ["integer", "string"],
+      "description": "The Canvas assignment ID this rubric is associated with"
+    },
+    "assignment_name": {
+      "type": "string",
+      "description": "The name of the assignment (for reference)"
+    },
+    "rubric": {
+      "type": "object",
+      "description": "The rubric definition",
+      "required": ["criteria"],
+      "properties": {
+        "id": {
+          "type": ["integer", "string"],
+          "description": "The Canvas rubric ID (assigned by Canvas)"
+        },
+        "title": {
+          "type": "string",
+          "description": "The title of the rubric"
+        },
+        "points_possible": {
+          "type": "number",
+          "description": "Total points possible for this rubric",
+          "minimum": 0
+        },
+        "free_form_criterion_comments": {
+          "type": "boolean",
+          "description": "Whether to allow free-form comments on criteria",
+          "default": false
+        },
+        "criteria": {
+          "type": "array",
+          "description": "List of rubric criteria",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["description", "points"],
+            "properties": {
+              "id": {
+                "type": "string",
+                "description": "Criterion ID (format: _xxxx)",
+                "pattern": "^_[0-9]+$"
+              },
+              "description": {
+                "type": "string",
+                "description": "Short description of this criterion"
+              },
+              "long_description": {
+                "type": ["string", "null"],
+                "description": "Detailed description of this criterion"
+              },
+              "points": {
+                "type": "number",
+                "description": "Maximum points for this criterion",
+                "minimum": 0
+              },
+              "ratings": {
+                "type": "array",
+                "description": "Rating levels for this criterion",
+                "items": {
+                  "type": "object",
+                  "required": ["description", "points"],
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "description": "Rating ID"
+                    },
+                    "description": {
+                      "type": "string",
+                      "description": "Description of this rating level"
+                    },
+                    "long_description": {
+                      "type": ["string", "null"],
+                      "description": "Detailed description of this rating level"
+                    },
+                    "points": {
+                      "type": "number",
+                      "description": "Points awarded for this rating",
+                      "minimum": 0
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

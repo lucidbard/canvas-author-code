@@ -448,6 +448,12 @@
         "icon": "$(device-camera-video)"
       }
     ],
+    "yamlValidation": [
+      {
+        "fileMatch": "*.rubric.yaml",
+        "url": "./schemas/rubric.schema.json"
+      }
+    ],
     "configuration": {
       "title": "Canvas Author",
       "properties": {
