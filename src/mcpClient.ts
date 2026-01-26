@@ -96,16 +96,22 @@ export class CanvasMcpClient {
 
   /**
    * Check if the MCP server is running and healthy.
+   * We check the /mcp endpoint since FastMCP doesn't have a dedicated health endpoint.
    */
   private async checkServerHealth(): Promise<boolean> {
     try {
-      const response = await fetch(`http://${this.serverHost}:${this.serverPort}/health`, {
-        method: 'GET',
+      // Try a simple POST to the MCP endpoint - even an empty request will get a response
+      // if the server is running (likely an error response, but that's fine)
+      const response = await fetch(this.serverUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 0, method: 'ping' }),
         signal: AbortSignal.timeout(2000)
       })
-      return response.ok
+      // Any response (even 4xx) means the server is running
+      return true
     } catch (error) {
-      // Server not running or not responding
+      // Connection refused or timeout means server not running
       return false
     }
   }
